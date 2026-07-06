@@ -1,0 +1,285 @@
+import type {
+  Deposit,
+  Fund,
+  FxRow,
+  Settings,
+  Valuation,
+} from './types';
+
+// نقطة التعادل: d* = 1 − (1+r_ae)/(1+r_eg)
+// مصر تكسب طالما تخفيض الجنيه المتوقع سنويًا أقل من d*
+export function dStar(settings: Settings): number {
+  return (
+    1 -
+    (1 + Number(settings.expected_yield_ae)) /
+      (1 + Number(settings.expected_yield_eg))
+  );
+}
+
+// آخر سعر AED/EGP: من fx_history، وإلا من آخر إيداع مسجّل له سعر
+export function latestFxRate(fx: FxRow[], deposits: Deposit[]): number {
+  if (fx.length > 0) {
+    const sorted = [...fx].sort((a, b) => a.date.localeCompare(b.date));
+    return Number(sorted[sorted.length - 1].aed_egp);
+  }
+  const withRate = deposits
+    .filter((d) => d.aed_egp_rate)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (withRate.length > 0)
+    return Number(withRate[withRate.length - 1].aed_egp_rate);
+  return 13; // fallback تقريبي لحين تسجيل أول سعر
+}
+
+export function toAED(amount: number, currency: string, rate: number): number {
+  return currency === 'EGP' ? amount / rate : amount;
+}
+
+export type Holding = {
+  fund: Fund;
+  investedNative: number; // بعملة الصندوق
+  investedAED: number; // محوّل بسعر يوم كل إيداع (يشمل أثر العملة)
+  currentNative: number;
+  currentAED: number; // محوّل بآخر سعر
+  returnPct: number | null; // بالدرهم — شامل أثر العملة
+  weight: number; // الوزن الفعلي في المحفظة
+  lastValuationDate: string | null;
+};
+
+export type MonthlyDepositRow = { month: string; EG: number; AE: number };
+
+export type PortfolioSummary = {
+  holdings: Holding[];
+  totalInvestedAED: number;
+  totalValueAED: number;
+  totalReturnPct: number | null;
+  egValueAED: number;
+  aeValueAED: number;
+  egWeight: number;
+  aeWeight: number;
+  egByClassAED: Record<string, number>; // تقسيمة الأصول داخل مصر
+  fxRate: number;
+  dcaStreak: number;
+  monthlyDeposits: MonthlyDepositRow[];
+};
+
+export function buildSummary(
+  funds: Fund[],
+  deposits: Deposit[],
+  valuations: Valuation[],
+  fx: FxRow[],
+  now: Date = new Date()
+): PortfolioSummary {
+  const fxRate = latestFxRate(fx, deposits);
+
+  // آخر تقييم لكل صندوق
+  const latestValuation = new Map<string, Valuation>();
+  for (const v of valuations) {
+    const prev = latestValuation.get(v.fund_id);
+    if (!prev || v.date > prev.date) latestValuation.set(v.fund_id, v);
+  }
+
+  const holdings: Holding[] = [];
+  for (const fund of funds) {
+    const fundDeposits = deposits.filter((d) => d.fund_id === fund.id);
+    if (fundDeposits.length === 0 && !latestValuation.has(fund.id)) continue;
+
+    let investedNative = 0;
+    let investedAED = 0;
+    for (const d of fundDeposits) {
+      const amount = Number(d.amount);
+      investedNative += amount;
+      if (d.currency === 'EGP') {
+        // سعر يوم الإيداع → التكلفة الحقيقية بالدرهم (يُظهر أثر تخفيض الجنيه)
+        investedAED += amount / Number(d.aed_egp_rate || fxRate);
+      } else {
+        investedAED += amount;
+      }
+    }
+
+    const val = latestValuation.get(fund.id);
+    const nativeCurrency = fund.country === 'EG' ? 'EGP' : 'AED';
+    const currentNative = val ? Number(val.current_value) : investedNative;
+    const currentAED = toAED(
+      currentNative,
+      val?.currency || nativeCurrency,
+      fxRate
+    );
+
+    holdings.push({
+      fund,
+      investedNative,
+      investedAED,
+      currentNative,
+      currentAED,
+      returnPct:
+        investedAED > 0 ? (currentAED - investedAED) / investedAED : null,
+      weight: 0, // يتحسب بعد الإجمالي
+      lastValuationDate: val ? val.date : null,
+    });
+  }
+
+  const totalInvestedAED = holdings.reduce((s, h) => s + h.investedAED, 0);
+  const totalValueAED = holdings.reduce((s, h) => s + h.currentAED, 0);
+  for (const h of holdings) {
+    h.weight = totalValueAED > 0 ? h.currentAED / totalValueAED : 0;
+  }
+
+  const egValueAED = holdings
+    .filter((h) => h.fund.country === 'EG')
+    .reduce((s, h) => s + h.currentAED, 0);
+  const aeValueAED = totalValueAED - egValueAED;
+
+  const egByClassAED: Record<string, number> = {};
+  for (const h of holdings) {
+    if (h.fund.country !== 'EG') continue;
+    const cls = h.fund.asset_class || 'diversified';
+    egByClassAED[cls] = (egByClassAED[cls] || 0) + h.currentAED;
+  }
+
+  // الإيداعات الشهرية بالدرهم (آخر 12 شهر فيهم إيداعات)
+  const byMonth = new Map<string, { EG: number; AE: number }>();
+  const fundCountry = new Map(funds.map((f) => [f.id, f.country]));
+  for (const d of deposits) {
+    const month = d.date.slice(0, 7);
+    const row = byMonth.get(month) || { EG: 0, AE: 0 };
+    const aed =
+      d.currency === 'EGP'
+        ? Number(d.amount) / Number(d.aed_egp_rate || fxRate)
+        : Number(d.amount);
+    const country = fundCountry.get(d.fund_id) || 'AE';
+    row[country] += aed;
+    byMonth.set(month, row);
+  }
+  const monthlyDeposits: MonthlyDepositRow[] = Array.from(byMonth.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-12)
+    .map(([month, v]) => ({ month, EG: v.EG, AE: v.AE }));
+
+  // DCA streak: شهور متتالية فيها إيداع، بالرجوع من الشهر الحالي
+  // (لو الشهر الحالي لسه مفيهوش إيداع، نبدأ العد من الشهر اللي فات)
+  const monthsWithDeposit = new Set(deposits.map((d) => d.date.slice(0, 7)));
+  let dcaStreak = 0;
+  const cursor = new Date(now.getFullYear(), now.getMonth(), 1);
+  const currentKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+  if (!monthsWithDeposit.has(currentKey)) {
+    cursor.setMonth(cursor.getMonth() - 1);
+  }
+  for (;;) {
+    const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    if (!monthsWithDeposit.has(key)) break;
+    dcaStreak++;
+    cursor.setMonth(cursor.getMonth() - 1);
+  }
+
+  return {
+    holdings,
+    totalInvestedAED,
+    totalValueAED,
+    totalReturnPct:
+      totalInvestedAED > 0
+        ? (totalValueAED - totalInvestedAED) / totalInvestedAED
+        : null,
+    egValueAED,
+    aeValueAED,
+    egWeight: totalValueAED > 0 ? egValueAED / totalValueAED : 0,
+    aeWeight: totalValueAED > 0 ? aeValueAED / totalValueAED : 0,
+    egByClassAED,
+    fxRate,
+    dcaStreak,
+    monthlyDeposits,
+  };
+}
+
+// ============ توصية توزيع الجلسة الشهرية ============
+// المنطق: الإيداع يروح للفئة/الدولة الأبعد عن هدفها
+// + قاعدة: أقل من 500 درهم = وجهة واحدة بدون تشتيت
+// + احترام سقف التعرض لمصر (eg_exposure_cap)
+
+export type AllocationLine = {
+  label: string;
+  country: 'EG' | 'AE';
+  assetClass?: string;
+  amountAED: number;
+};
+
+export type Recommendation = {
+  lines: AllocationLine[];
+  rationale: string[];
+};
+
+export function recommendAllocation(
+  budgetAED: number,
+  summary: PortfolioSummary,
+  settings: Settings
+): Recommendation {
+  const rationale: string[] = [];
+  const newTotal = summary.totalValueAED + budgetAED;
+
+  // كام محتاجين نضيف لكل دولة عشان نوصل للوزن المستهدف بعد الإيداع؟
+  const egTargetValue = Number(settings.eg_target) * newTotal;
+  const egGapAED = Math.max(0, egTargetValue - summary.egValueAED);
+  let egAmount = Math.min(budgetAED, egGapAED);
+  let aeAmount = budgetAED - egAmount;
+
+  // سقف التعرض لمصر
+  const cap = Number(settings.eg_exposure_cap);
+  const egAfter = summary.egValueAED + egAmount;
+  if (newTotal > 0 && egAfter / newTotal > cap) {
+    const maxEg = Math.max(0, cap * newTotal - summary.egValueAED);
+    rationale.push(
+      `سقف التعرض لمصر (${(cap * 100).toFixed(0)}%) قلّل نصيب مصر الشهر ده.`
+    );
+    egAmount = Math.min(egAmount, maxEg);
+    aeAmount = budgetAED - egAmount;
+  }
+
+  // داخل مصر: نقدي × أسهم — الأبعد عن هدفه ياخد الأولوية
+  const egMM = summary.egByClassAED['money_market'] || 0;
+  const egValue = summary.egValueAED;
+  const egAfterDeposit = egValue + egAmount;
+  const mmTargetValue =
+    Number(settings.eg_money_market_target) * egAfterDeposit;
+  const mmGap = Math.max(0, mmTargetValue - egMM);
+  const egMMAmount = Math.min(egAmount, mmGap);
+  const egEqAmount = egAmount - egMMAmount;
+
+  let lines: AllocationLine[] = [];
+  if (egMMAmount > 0)
+    lines.push({
+      label: 'مصر — نقدي/سيولة',
+      country: 'EG',
+      assetClass: 'money_market',
+      amountAED: egMMAmount,
+    });
+  if (egEqAmount > 0)
+    lines.push({
+      label: 'مصر — أسهم',
+      country: 'EG',
+      assetClass: 'equity',
+      amountAED: egEqAmount,
+    });
+  if (aeAmount > 0)
+    lines.push({
+      label: 'الإمارات — المحفظة العالمية',
+      country: 'AE',
+      amountAED: aeAmount,
+    });
+
+  // قاعدة أقل من 500 درهم: وجهة واحدة بدون تشتيت
+  if (budgetAED < 500 && lines.length > 1) {
+    const biggest = lines.reduce((a, b) =>
+      b.amountAED > a.amountAED ? b : a
+    );
+    lines = [{ ...biggest, amountAED: budgetAED }];
+    rationale.push(
+      'الميزانية أقل من 500 درهم → وجهة واحدة بس بدون تشتيت (الأبعد عن هدفها).'
+    );
+  }
+
+  rationale.push(
+    `الوزن الحالي: مصر ${(summary.egWeight * 100).toFixed(1)}% × هدف ${(Number(settings.eg_target) * 100).toFixed(0)}% — الإمارات ${(summary.aeWeight * 100).toFixed(1)}% × هدف ${(Number(settings.ae_target) * 100).toFixed(0)}%.`
+  );
+  rationale.push('الإيداع بيروح للفئة/الدولة الأبعد عن هدفها.');
+
+  return { lines, rationale };
+}
