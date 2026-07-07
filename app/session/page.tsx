@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { buildSummary, dStar, recommendAllocation } from '@/lib/calc';
 import { currentMonth, fmtAED, fmtNum, fmtPct } from '@/lib/format';
 import { getSupabase } from '@/lib/supabase/client';
 import { usePortfolioData } from '@/lib/usePortfolioData';
+
+type BudgetCurrency = 'AED' | 'EGP' | 'USD';
 
 export default function SessionPage() {
   const { settings, funds, deposits, valuations, fx, loading, error } =
@@ -13,11 +15,36 @@ export default function SessionPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [month, setMonth] = useState(currentMonth());
   const [budget, setBudget] = useState('');
+  const [budgetCurrency, setBudgetCurrency] = useState<BudgetCurrency>('AED');
+  const [liveRates, setLiveRates] = useState<{
+    egpPerAed: number;
+    usdPerAed: number;
+  } | null>(null);
   const [cbRate, setCbRate] = useState('');
   const [notes, setNotes] = useState('');
   const [decision, setDecision] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // أسعار الصرف الحية لتحويل الميزانية من أي عملة للدرهم
+  useEffect(() => {
+    let cancelled = false;
+    fetch('https://open.er-api.com/v6/latest/AED')
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data?.rates?.EGP && data?.rates?.USD) {
+          setLiveRates({
+            egpPerAed: Number(data.rates.EGP),
+            usdPerAed: Number(data.rates.USD),
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (loading)
     return <p className="py-20 text-center text-zinc-500">جاري التحميل…</p>;
@@ -32,11 +59,22 @@ export default function SessionPage() {
 
   const summary = buildSummary(funds, deposits, valuations, fx);
   const d = dStar(settings);
-  const budgetNum = parseFloat(budget) || 0;
-  const rec = recommendAllocation(budgetNum, summary, settings);
+
+  // تحويل الميزانية للدرهم مهما كانت العملة المدخلة
+  const egpPerAed = liveRates?.egpPerAed ?? summary.fxRate;
+  const usdPerAed = liveRates?.usdPerAed ?? 0.2723; // الدرهم مثبّت للدولار
+  const amountNum = parseFloat(budget) || 0;
+  const budgetAED =
+    budgetCurrency === 'AED'
+      ? amountNum
+      : budgetCurrency === 'EGP'
+        ? amountNum / egpPerAed
+        : amountNum / usdPerAed;
+
+  const rec = recommendAllocation(budgetAED, summary, settings);
 
   function goToStep2() {
-    if (budgetNum > 0) setStep(2);
+    if (budgetAED > 0) setStep(2);
   }
 
   function goToStep3() {
@@ -51,9 +89,11 @@ export default function SessionPage() {
           }`
       )
       .join('\n');
-    setDecision(
-      `ميزانية ${month}: ${fmtNum(budgetNum)} AED\nالتوزيع:\n${lines}`
-    );
+    const budgetLabel =
+      budgetCurrency === 'AED'
+        ? `${fmtNum(budgetAED)} AED`
+        : `${fmtNum(amountNum)} ${budgetCurrency} (≈ ${fmtNum(budgetAED)} AED)`;
+    setDecision(`ميزانية ${month}: ${budgetLabel}\nالتوزيع:\n${lines}`);
     setStep(3);
   }
 
@@ -121,16 +161,34 @@ export default function SessionPage() {
           </div>
           <div>
             <label className="mb-1 block text-sm text-zinc-400">
-              ميزانية الشهر (بالدرهم)
+              ميزانية الشهر — بأي عملة وإحنا نحوّلها
             </label>
-            <input
-              type="number"
-              step="any"
-              dir="ltr"
-              value={budget}
-              onChange={(e) => setBudget(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-amber-500"
-            />
+            <div className="flex gap-2">
+              <input
+                type="number"
+                step="any"
+                dir="ltr"
+                value={budget}
+                onChange={(e) => setBudget(e.target.value)}
+                className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-amber-500"
+              />
+              <select
+                value={budgetCurrency}
+                onChange={(e) =>
+                  setBudgetCurrency(e.target.value as BudgetCurrency)
+                }
+                className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-amber-500"
+              >
+                <option value="AED">درهم AED</option>
+                <option value="EGP">جنيه EGP</option>
+                <option value="USD">دولار USD</option>
+              </select>
+            </div>
+            {budgetCurrency !== 'AED' && amountNum > 0 && (
+              <p className="num mt-1.5 text-xs text-amber-300/80">
+                ≈ {fmtNum(budgetAED)} AED بسعر اليوم
+              </p>
+            )}
           </div>
           <div>
             <label className="mb-1 block text-sm text-zinc-400">
@@ -158,7 +216,7 @@ export default function SessionPage() {
           </div>
           <button
             onClick={goToStep2}
-            disabled={budgetNum <= 0}
+            disabled={budgetAED <= 0}
             className="rounded-lg bg-amber-500 px-6 py-2 text-sm font-bold text-zinc-950 transition-colors hover:bg-amber-400 disabled:opacity-40"
           >
             التالي ←
@@ -224,7 +282,7 @@ export default function SessionPage() {
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
             <h2 className="mb-3 text-sm font-bold text-zinc-300">
-              التوصية المقترحة — ميزانية {fmtAED(budgetNum)}
+              التوصية المقترحة — ميزانية {fmtAED(budgetAED)}
             </h2>
             {rec.lines.length === 0 ? (
               <p className="text-sm text-zinc-500">مفيش توصية — راجع الأرقام</p>
