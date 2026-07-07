@@ -42,7 +42,8 @@ async function gemini(
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY غير موجود في .env.local');
 
-  const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+  // gemini-2.0-flash اتقاعد من الـ free tier — flash-latest بيشاور على الأحدث دايمًا
+  const model = process.env.GEMINI_MODEL || 'gemini-flash-latest';
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
