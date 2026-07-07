@@ -41,7 +41,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const { message } = (await req.json()) as { message?: string };
+  const { message, imageBase64, imageMime } = (await req.json()) as {
+    message?: string;
+    imageBase64?: string;
+    imageMime?: string;
+  };
   if (!message || typeof message !== 'string' || !message.trim()) {
     return NextResponse.json({ error: 'رسالة فاضية' }, { status: 400 });
   }
@@ -131,13 +135,29 @@ export async function POST(req: Request) {
       'd*': r.d_star,
     })),
     'آخر 6 أسعار صرف': fxAll.slice(-6),
+    'قائمة الصناديق المتاحة': funds
+      .filter((f) => f.is_active)
+      .map((f) => ({ fund_id: f.id, الاسم: f.name, الدولة: f.country })),
   };
 
-  const system = `${SYSTEM_PROMPT}\n\n### بيانات أحمد الحالية من النظام (السياق المرفق):\n${JSON.stringify(context, null, 1)}`;
+  const depositInstruction = `
+
+### تسجيل الإيداعات:
+لو أحمد بلّغك إنه عمل إيداع جديد (بالكلام أو بصورة إيصال مرفقة)، استخرج بياناته، ورد عليه رد قصير بيلخص اللي فهمته، وأضف في آخر ردك سطرًا أخيرًا منفصلًا بالصيغة دي بالظبط (JSON صالح في سطر واحد):
+DEPOSIT_JSON:{"fund_id":"<اختر id من قائمة الصناديق المتاحة>","amount":<رقم>,"currency":"EGP" أو "AED","date":"YYYY-MM-DD" أو null لو النهاردة,"reason":"ملاحظة قصيرة أو null"}
+- اختر الصندوق الأقرب من القائمة حسب كلامه أو محتوى الإيصال.
+- لو مش قادر تحدد الصندوق أو المبلغ بوضوح: اسأله سؤال توضيحي ومتكتبش السطر خالص.
+- متستخدمش الصيغة دي في أي حالة تانية غير تبليغه عن إيداع فعلي جديد.`;
+
+  const system = `${SYSTEM_PROMPT}${depositInstruction}\n\n### بيانات أحمد الحالية من النظام (السياق المرفق):\n${JSON.stringify(context, null, 1)}`;
 
   const messages: LlmMessage[] = [
     ...history.map((m) => ({ role: m.role, content: m.content })),
-    { role: 'user' as const, content: message },
+    {
+      role: 'user' as const,
+      content: message,
+      ...(imageBase64 && imageMime ? { imageBase64, imageMime } : {}),
+    },
   ];
 
   let reply: string;
@@ -154,11 +174,56 @@ export async function POST(req: Request) {
     );
   }
 
+  // استخراج إيداع معلّق من الرد (لو البوت لقط تبليغ عن إيداع)
+  let pendingDeposit: {
+    fund_id: string;
+    fund_name: string;
+    amount: number;
+    currency: 'EGP' | 'AED';
+    date: string;
+    aed_egp_rate: number | null;
+    reason: string | null;
+  } | null = null;
+
+  const depositMatch = reply.match(/DEPOSIT_JSON:\s*(\{[\s\S]*?\})\s*$/);
+  if (depositMatch) {
+    reply = reply.replace(depositMatch[0], '').trim();
+    try {
+      const p = JSON.parse(depositMatch[1]);
+      const fund =
+        funds.find((f) => f.id === p.fund_id) ||
+        funds.find((f) => f.name === p.fund_id);
+      const amount = Number(p.amount);
+      const currency = p.currency === 'EGP' ? 'EGP' : 'AED';
+      if (fund && amount > 0) {
+        const today = new Date().toISOString().slice(0, 10);
+        const date =
+          typeof p.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.date)
+            ? p.date
+            : today;
+        pendingDeposit = {
+          fund_id: fund.id,
+          fund_name: fund.name,
+          amount,
+          currency,
+          date,
+          aed_egp_rate: summary.fxRate || null,
+          reason: typeof p.reason === 'string' ? p.reason : null,
+        };
+      }
+    } catch {
+      // JSON بايظ → نتجاهل ونرجّع الرد النصي عادي
+    }
+  }
+
   // حفظ المحادثة (المستخدم أولًا ثم الرد للحفاظ على الترتيب)
-  await supabase.from('chat_messages').insert({ role: 'user', content: message });
+  await supabase.from('chat_messages').insert({
+    role: 'user',
+    content: imageBase64 ? `${message}\n📎 (مرفق: صورة إيصال)` : message,
+  });
   await supabase
     .from('chat_messages')
     .insert({ role: 'assistant', content: reply });
 
-  return NextResponse.json({ reply });
+  return NextResponse.json({ reply, pendingDeposit });
 }

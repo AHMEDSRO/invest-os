@@ -4,6 +4,9 @@
 export type LlmMessage = {
   role: 'user' | 'assistant';
   content: string;
+  // صورة إيصال مرفقة (مدعومة مع Gemini فقط)
+  imageBase64?: string;
+  imageMime?: string;
 };
 
 export async function chatCompletion(
@@ -51,10 +54,18 @@ async function gemini(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
-        contents: messages.map((m) => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
-        })),
+        contents: messages.map((m) => {
+          const parts: Array<Record<string, unknown>> = [{ text: m.content }];
+          if (m.imageBase64 && m.imageMime) {
+            parts.push({
+              inline_data: { mime_type: m.imageMime, data: m.imageBase64 },
+            });
+          }
+          return {
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts,
+          };
+        }),
         generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
       }),
     }
