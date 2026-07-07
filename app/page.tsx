@@ -42,8 +42,10 @@ function KpiCard({
 }) {
   return (
     <div className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-900/50 p-5 transition-all hover:border-amber-600/30 hover:shadow-lg hover:shadow-amber-950/20">
-      <p className="text-sm text-zinc-400">{title}</p>
-      <p className="num mt-2 text-2xl font-bold text-zinc-50">{value}</p>
+      <p className="text-xs text-zinc-400 md:text-sm">{title}</p>
+      <p className="num mt-2 text-xl font-bold text-zinc-50 md:text-2xl">
+        {value}
+      </p>
       {sub && <p className="mt-1 text-xs text-zinc-500">{sub}</p>}
     </div>
   );
@@ -116,7 +118,7 @@ export default function DashboardPage() {
       <h1 className="text-xl font-bold">الداشبورد</h1>
 
       {/* كروت KPI */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:gap-4 lg:grid-cols-4">
         <KpiCard
           title="قيمة المحفظة (موحّدة بالدرهم)"
           value={fmtAED(summary.totalValueAED)}
@@ -144,7 +146,7 @@ export default function DashboardPage() {
               <p className="text-sm text-amber-300/80">
                 نقطة التعادل بين مصر والإمارات
               </p>
-              <p className="num mt-1 text-4xl font-black text-amber-400">
+              <p className="num mt-1 text-3xl font-black text-amber-400 md:text-4xl">
                 d* = {fmtPct(d)}
               </p>
             </div>

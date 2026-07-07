@@ -72,7 +72,7 @@ export default function MarketPage() {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${
+            className={`flex-1 whitespace-nowrap rounded-xl px-2 py-2 text-xs font-bold transition-all sm:px-4 sm:py-2.5 sm:text-sm ${
               tab === t.key
                 ? 'bg-amber-500 text-zinc-950 shadow-lg shadow-amber-500/20'
                 : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'

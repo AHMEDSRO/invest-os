@@ -136,7 +136,7 @@ export default function SessionPage() {
               {i + 1}
             </span>
             <span
-              className={`text-sm ${
+              className={`hidden text-sm sm:inline ${
                 step > i ? 'text-zinc-200' : 'text-zinc-600'
               }`}
             >

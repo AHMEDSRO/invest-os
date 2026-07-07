@@ -92,7 +92,7 @@ export default function PortfolioPage() {
 
       {/* جدول الحيازات */}
       <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[720px] text-sm">
           <thead>
             <tr className="border-b border-zinc-800 text-right text-xs text-zinc-500">
               <th className="p-3">الصندوق</th>
