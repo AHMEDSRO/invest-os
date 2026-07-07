@@ -41,7 +41,7 @@ function KpiCard({
   sub?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+    <div className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-900/50 p-5 transition-all hover:border-amber-600/30 hover:shadow-lg hover:shadow-amber-950/20">
       <p className="text-sm text-zinc-400">{title}</p>
       <p className="num mt-2 text-2xl font-bold text-zinc-50">{value}</p>
       {sub && <p className="mt-1 text-xs text-zinc-500">{sub}</p>}
@@ -57,7 +57,7 @@ function ChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+    <div className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-900/50 p-5 transition-colors hover:border-zinc-700">
       <h2 className="mb-4 text-sm font-bold text-zinc-300">{title}</h2>
       <div className="h-64" dir="ltr">
         {children}
