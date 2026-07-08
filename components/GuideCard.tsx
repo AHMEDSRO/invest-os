@@ -74,10 +74,11 @@ export default function GuideCard() {
   return (
     <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/40 p-5 md:p-6">
       <h2 className="text-base font-bold text-amber-300 md:text-lg">
-        💰 معايا مبلغ الشهر ده — أحطه فين؟
+        💰 معايا مبلغ الشهر ده — أستثمره فين؟
       </h2>
       <p className="mt-1 text-xs text-zinc-400">
-        اكتب المبلغ بأي عملة والمرشد يقولك أضمن توزيع ليه وإزاي تنفذه
+        اكتب المبلغ بأي عملة والمرشد يحددلك السوق والصندوق بالاسم وليه وإزاي
+        تنفذ
       </p>
 
       <form onSubmit={ask} className="mt-4 flex flex-wrap gap-2">
@@ -104,7 +105,7 @@ export default function GuideCard() {
           disabled={loading || !parseFloat(amount)}
           className="rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold text-zinc-950 transition-colors hover:bg-amber-400 disabled:opacity-40"
         >
-          {loading ? 'بيفكرلك…' : 'قولي أحط فين'}
+          {loading ? 'بيفكرلك…' : 'قولي أستثمر فين'}
         </button>
         <button
           type="button"

@@ -66,7 +66,13 @@ async function gemini(
             parts,
           };
         }),
-        generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+        generationConfig: {
+          temperature: 0.4,
+          // الموديلات الجديدة بتصرف من الحصة على "التفكير" — نكبّر الحصة ونقفل التفكير
+          // عشان الرد ميتقطعش في النص
+          maxOutputTokens: 4096,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     }
   );

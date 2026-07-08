@@ -76,26 +76,45 @@ export async function POST(req: Request) {
 
   const rec = recommendAllocation(budgetAED, summary, settings);
 
-  const activeFunds = funds
-    .filter((f) => f.is_active)
-    .map((f) => `${f.name} (${f.country === 'EG' ? 'مصر' : 'الإمارات'} — ${f.platform})`);
+  // نحدد الصناديق بالاسم هنا في السيرفر — الـ AI بيصيغ بس، مش بيقرر
+  const suggestions = rec.lines.map((l) => {
+    const fund =
+      funds.find(
+        (f) =>
+          f.is_active &&
+          f.country === l.country &&
+          (!l.assetClass || f.asset_class === l.assetClass)
+      ) || funds.find((f) => f.is_active && f.country === l.country);
+    const isEG = l.country === 'EG';
+    const amountNative = isEG ? l.amountAED * summary.fxRate : l.amountAED;
+    return fund
+      ? `«${fund.name}» على منصة ${fund.platform} — بمبلغ ${Math.round(amountNative)} ${isEG ? 'جنيه' : 'درهم'}`
+      : `${l.label} — بمبلغ ${Math.round(l.amountAED)} درهم`;
+  });
 
-  const guidePrompt = `أنت مرشد استثماري شخصي لأحمد — مستثمر مبتدئ بيدوّر على أضمن اختيار لفلوسه. اعتمد على الأرقام دي فقط وممنوع تخترع أي رقم من عندك:
+  const userAmountLabel = `${amountNum} ${
+    currency === 'EGP' ? 'جنيه' : currency === 'AED' ? 'درهم' : 'دولار'
+  }`;
 
-- ميزانية الشهر: ${amountNum} ${currency} (تساوي تقريبًا ${budgetAED.toFixed(0)} درهم بسعر ${summary.fxRate.toFixed(2)} جنيه للدرهم)
-- العائد السنوي المتوقع: مصر ${(Number(settings.expected_yield_eg) * 100).toFixed(0)}% × الإمارات ${(Number(settings.expected_yield_ae) * 100).toFixed(0)}%
-- نقطة التعادل: مصر تكسب طالما تخفيض الجنيه المتوقع أقل من ${(d * 100).toFixed(1)}% سنويًا
-- محفظته الحالية: مصر ${(summary.egWeight * 100).toFixed(0)}% (هدفه ${(Number(settings.eg_target) * 100).toFixed(0)}%) — الإمارات ${(summary.aeWeight * 100).toFixed(0)}% (هدفه ${(Number(settings.ae_target) * 100).toFixed(0)}%)
-- توصية المحرك الحسابي للتوزيع: ${rec.lines.map((l) => `${l.label}: ${l.amountAED.toFixed(0)} درهم`).join(' + ') || 'لا يوجد'}
-- ملاحظات المحرك: ${rec.rationale.join(' | ')}
-- الصناديق المتاحة عنده: ${activeFunds.join(' — ')}
+  const guidePrompt = `أنت مرشد استثماري شخصي لأحمد — مستثمر مبتدئ بيدوّر على أضمن اختيار لفلوسه. اعتمد على المعلومات دي فقط وممنوع تخترع أي رقم أو صندوق من عندك:
 
-اكتب له إجابة قصيرة بالمصري البسيط جدًا (من غير مصطلحات زي d* أو أوزان):
-1) سطر واحد جريء: القرار المقترح — يحط المبلغ فين بالظبط
-2) «ليه ده أضمن اختيار؟» — 3 نقط قصيرة بأرقام بسيطة
-3) «تنفذها إزاي؟» — خطوتين عمليتين على التطبيق المناسب (ثاندر أو Sarwa)
-4) سطر أخير: تذكير لطيف إنك مش مستشار مالي مرخّص والقرار النهائي ليه
-لو المبلغ أقل من 500 درهم شدد إن وجهة واحدة أفضل من التشتيت. لو تحويل المبلغ للخارج هياكل رسوم كبيرة بالنسبة لحجمه، اذكر ده.`;
+- ميزانية الشهر: ${userAmountLabel} (تساوي تقريبًا ${budgetAED.toFixed(0)} درهم بسعر ${summary.fxRate.toFixed(2)} جنيه للدرهم)
+- القرار المحسوب (اتحدد بالفعل — مهمتك تشرحه مش تغيّره): ${suggestions.join(' + ')}
+- العائد السنوي المتوقع: صناديق مصر حوالي ${(Number(settings.expected_yield_eg) * 100).toFixed(0)}% بالجنيه × صناديق الإمارات حوالي ${(Number(settings.expected_yield_ae) * 100).toFixed(0)}% بالدرهم
+- حساب التعادل: مصر بتكسب أكتر طالما الجنيه مش هيتخفض أكتر من ${(d * 100).toFixed(1)}% في السنة
+- سبب القرار من المحرك الحسابي: ${rec.rationale.join(' | ')}
+
+قواعد إلزامية للرد:
+- اكتب بالمصري البسيط جدًا، نص عادي تمامًا من غير أي تنسيق: ممنوع النجوم ** وممنوع markdown وممنوع عناوين بالرموز.
+- اتكلم بعملة أحمد الأساسية (${userAmountLabel}) — والدرهم يتقال كمعلومة إضافية لو محتاج.
+- ممنوع مصطلحات معقدة (زي d* أو أوزان أو تعرّض) — ولو لزم مصطلح فسّره بين قوسين.
+
+اكتب الرد بالهيكل ده بالظبط:
+السطر الأول: "القرار: استثمر [المبلغ] في [اسم الصندوق بالظبط] على [المنصة]" — لو القرار مقسوم على أكتر من صندوق اذكرهم كلهم بالمبالغ.
+بعدين سطر "ليه ده أضمن اختيار؟" وتحته 3 نقط قصيرة بأرقام بسيطة، كل نقطة تبدأ بشرطة -
+بعدين سطر "تنفذها إزاي؟" وتحته خطوتين أو تلاتة عمليين بالظبط على المنصة المذكورة، كل خطوة تبدأ بشرطة -
+وآخر سطر: تذكير لطيف قصير إنك مش مستشار مالي مرخّص والقرار النهائي له.
+${budgetAED < 500 ? 'المبلغ أقل من 500 درهم: أكد إن التركيز في وجهة واحدة أأمن من التشتيت، وإن تحويل مبلغ صغير زي ده للخارج رسوم التحويل هتاكل منه جزء كبير.' : ''}`;
 
   let answer: string;
   try {
