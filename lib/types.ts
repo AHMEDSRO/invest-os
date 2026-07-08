@@ -25,6 +25,7 @@ export const ASSET_CLASS_AR: Record<string, string> = {
   money_market: 'نقدي / سيولة',
   fixed_income: 'دخل ثابت',
   equity: 'أسهم',
+  gold: 'ذهب',
   sector: 'قطاعي',
   diversified: 'متنوع',
 };

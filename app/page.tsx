@@ -15,6 +15,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import GuideCard from '@/components/GuideCard';
 import { buildSummary, dStar } from '@/lib/calc';
 import { fmtAED, fmtNum, fmtPct } from '@/lib/format';
 import { ASSET_CLASS_AR } from '@/lib/types';
@@ -116,6 +117,9 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">الداشبورد</h1>
+
+      {/* سؤال الشهر — قلب التطبيق */}
+      <GuideCard />
 
       {/* كروت KPI */}
       <div className="grid grid-cols-2 gap-3 md:gap-4 lg:grid-cols-4">
