@@ -16,7 +16,7 @@ import {
   YAxis,
 } from 'recharts';
 import GuideCard from '@/components/GuideCard';
-import { buildSummary, dStar } from '@/lib/calc';
+import { buildAlerts, buildSummary, dStar } from '@/lib/calc';
 import { fmtAED, fmtNum, fmtPct } from '@/lib/format';
 import { ASSET_CLASS_AR } from '@/lib/types';
 import { usePortfolioData } from '@/lib/usePortfolioData';
@@ -80,6 +80,7 @@ export default function DashboardPage() {
 
   const summary = buildSummary(funds, deposits, valuations, fx);
   const d = settings ? dStar(settings) : null;
+  const alerts = buildAlerts(summary, deposits, fx);
 
   const allocationData = settings
     ? [
@@ -120,6 +121,25 @@ export default function DashboardPage() {
 
       {/* سؤال الشهر — قلب التطبيق */}
       <GuideCard />
+
+      {/* التنبيهات */}
+      {alerts.length > 0 && (
+        <div className="space-y-2">
+          {alerts.map((a, i) => (
+            <div
+              key={i}
+              className={`flex items-start gap-2 rounded-xl border px-4 py-3 text-sm leading-6 ${
+                a.level === 'warn'
+                  ? 'border-red-800/60 bg-red-950/30 text-red-200'
+                  : 'border-amber-700/40 bg-amber-950/20 text-amber-200/90'
+              }`}
+            >
+              <span>{a.level === 'warn' ? '⚠️' : '💡'}</span>
+              <span>{a.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* كروت KPI */}
       <div className="grid grid-cols-2 gap-3 md:gap-4 lg:grid-cols-4">

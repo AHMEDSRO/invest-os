@@ -60,6 +60,19 @@ export default function PortfolioPage() {
     }
   }
 
+  async function deleteLastValuation(fundId: string, date: string) {
+    if (
+      !window.confirm(`متأكد إنك عايز تمسح تقييم يوم ${date} للصندوق ده؟`)
+    )
+      return;
+    await getSupabase()
+      .from('valuations')
+      .delete()
+      .eq('fund_id', fundId)
+      .eq('date', date);
+    reload();
+  }
+
   async function toggleFund(fund: Fund) {
     await getSupabase()
       .from('funds')
@@ -181,15 +194,31 @@ export default function PortfolioPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => {
-                          setValuingFund(h.fund.id);
-                          setNewValue('');
-                        }}
-                        className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-300 transition-colors hover:border-amber-500 hover:text-amber-300"
-                      >
-                        تحديث قيمة
-                      </button>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            setValuingFund(h.fund.id);
+                            setNewValue('');
+                          }}
+                          className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-300 transition-colors hover:border-amber-500 hover:text-amber-300"
+                        >
+                          تحديث قيمة
+                        </button>
+                        {h.lastValuationDate && (
+                          <button
+                            onClick={() =>
+                              deleteLastValuation(
+                                h.fund.id,
+                                h.lastValuationDate!
+                              )
+                            }
+                            title="مسح آخر تقييم (تراجع)"
+                            className="rounded-lg border border-zinc-800 px-2 py-1 text-xs text-zinc-500 transition-colors hover:border-red-600 hover:text-red-400"
+                          >
+                            ↩ مسح آخر قيمة
+                          </button>
+                        )}
+                      </div>
                     )}
                   </td>
                 </tr>

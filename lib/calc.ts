@@ -190,6 +190,81 @@ export function buildSummary(
   };
 }
 
+// ============ تنبيهات المحفظة (محسوبة بالكود) ============
+// «نبهني لو في مشكلة» — بتتحسب من بياناته المسجلة عند كل فتح للداشبورد
+
+export type PortfolioAlert = { level: 'warn' | 'info'; text: string };
+
+export function buildAlerts(
+  summary: PortfolioSummary,
+  deposits: Deposit[],
+  fx: FxRow[],
+  now: Date = new Date()
+): PortfolioAlert[] {
+  const alerts: PortfolioAlert[] = [];
+
+  // 1) صندوق خسران أكتر من 5% (شامل أثر العملة)
+  for (const h of summary.holdings) {
+    if (h.returnPct !== null && h.returnPct < -0.05) {
+      alerts.push({
+        level: 'warn',
+        text: `«${h.fund.name}» خسران ${(h.returnPct * 100).toFixed(1)}% — مش لازم تبيع بسرعة، بس راجعه في جلستك الجاية.`,
+      });
+    }
+  }
+
+  // 2) حركة قوية في سعر الصرف خلال آخر ~30 يوم
+  if (fx.length >= 2) {
+    const sorted = [...fx].sort((a, b) => a.date.localeCompare(b.date));
+    const latest = sorted[sorted.length - 1];
+    const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const past =
+      [...sorted].reverse().find((r) => r.date <= cutoff) ?? sorted[0];
+    if (past.date !== latest.date) {
+      const change = Number(latest.aed_egp) / Number(past.aed_egp) - 1;
+      if (Math.abs(change) > 0.03) {
+        alerts.push({
+          level: 'warn',
+          text: `الجنيه ${change > 0 ? 'ضعف' : 'قوي'} ${(Math.abs(change) * 100).toFixed(1)}% مقابل الدرهم خلال الفترة الأخيرة — ده بيأثر على حساب مصر × الإمارات.`,
+        });
+      }
+    }
+  }
+
+  // 3) الشهر قرب يخلص من غير إيداع (حماية الـ DCA streak)
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const hasThisMonth = deposits.some((d) => d.date.startsWith(monthKey));
+  if (deposits.length > 0 && !hasThisMonth && now.getDate() >= 20) {
+    alerts.push({
+      level: 'info',
+      text: 'الشهر قرب يخلص ولسه مسجلتش إيداع — حافظ على التزامك الشهري حتى لو بمبلغ صغير.',
+    });
+  }
+
+  // 4) قيم الصناديق محتاجة تحديث (أقدم من 35 يوم)
+  const staleCutoff = new Date(now.getTime() - 35 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  for (const h of summary.holdings) {
+    if (h.investedNative <= 0) continue;
+    if (!h.lastValuationDate) {
+      alerts.push({
+        level: 'info',
+        text: `«${h.fund.name}» لسه معملتلوش أي تحديث قيمة — حدّثه من صفحة المحفظة عشان العائد يتحسب صح.`,
+      });
+    } else if (h.lastValuationDate < staleCutoff) {
+      alerts.push({
+        level: 'info',
+        text: `آخر تحديث قيمة لـ «${h.fund.name}» من أكتر من شهر (${h.lastValuationDate}) — حدّثه من صفحة المحفظة.`,
+      });
+    }
+  }
+
+  return alerts.slice(0, 6);
+}
+
 // ============ توصية توزيع الجلسة الشهرية ============
 // المنطق: الإيداع يروح للفئة/الدولة الأبعد عن هدفها
 // + قاعدة: أقل من 500 درهم = وجهة واحدة بدون تشتيت

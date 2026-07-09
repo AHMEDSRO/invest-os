@@ -26,6 +26,7 @@ export default function DepositsPage() {
   const [rateSource, setRateSource] = useState<'live' | 'manual' | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const selectedFund = activeFunds.find((f) => f.id === form.fund_id);
   const currency = selectedFund?.country === 'AE' ? 'AED' : 'EGP';
@@ -67,7 +68,7 @@ export default function DepositsPage() {
     setSaving(true);
     const supabase = getSupabase();
 
-    const { error: depErr } = await supabase.from('deposits').insert({
+    const payload = {
       date: form.date,
       fund_id: form.fund_id,
       amount,
@@ -76,7 +77,11 @@ export default function DepositsPage() {
       nav: form.nav ? parseFloat(form.nav) : null,
       units: form.units ? parseFloat(form.units) : null,
       reason: form.reason || null,
-    });
+    };
+
+    const { error: depErr } = editingId
+      ? await supabase.from('deposits').update(payload).eq('id', editingId)
+      : await supabase.from('deposits').insert(payload);
 
     // تسجيل سعر الصرف في fx_history (يغذي رسمة الداشبورد)
     if (!depErr && rate) {
@@ -90,8 +95,43 @@ export default function DepositsPage() {
       setMsg('حصل خطأ أثناء الحفظ — حاول تاني');
       return;
     }
-    setMsg('الإيداع اتسجل ✓');
+    setMsg(editingId ? 'التعديل اتحفظ ✓' : 'الإيداع اتسجل ✓');
+    setEditingId(null);
     setForm((f) => ({ ...f, amount: '', nav: '', units: '', reason: '' }));
+    reload();
+  }
+
+  function startEdit(id: string) {
+    const d = deposits.find((x) => x.id === id);
+    if (!d) return;
+    setEditingId(id);
+    setMsg(null);
+    setForm({
+      date: d.date,
+      fund_id: d.fund_id,
+      amount: String(d.amount),
+      aed_egp_rate: d.aed_egp_rate ? String(d.aed_egp_rate) : '',
+      nav: d.nav ? String(d.nav) : '',
+      units: d.units ? String(d.units) : '',
+      reason: d.reason || '',
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm((f) => ({ ...f, amount: '', nav: '', units: '', reason: '' }));
+  }
+
+  async function deleteDeposit(id: string) {
+    if (!window.confirm('متأكد إنك عايز تمسح الإيداع ده نهائيًا؟')) return;
+    const { error } = await getSupabase().from('deposits').delete().eq('id', id);
+    if (error) {
+      setMsg('حصل خطأ في المسح — حاول تاني');
+      return;
+    }
+    if (editingId === id) cancelEdit();
+    setMsg('الإيداع اتمسح ✓');
     reload();
   }
 
@@ -219,8 +259,21 @@ export default function DepositsPage() {
             disabled={saving || activeFunds.length === 0}
             className="rounded-lg bg-amber-500 px-6 py-2 text-sm font-bold text-zinc-950 transition-colors hover:bg-amber-400 disabled:opacity-50"
           >
-            {saving ? 'جاري الحفظ…' : 'تسجيل الإيداع'}
+            {saving
+              ? 'جاري الحفظ…'
+              : editingId
+                ? 'حفظ التعديل ✏️'
+                : 'تسجيل الإيداع'}
           </button>
+          {editingId && (
+            <button
+              type="button"
+              onClick={cancelEdit}
+              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
+            >
+              إلغاء التعديل
+            </button>
+          )}
           {msg && (
             <span
               className={`text-sm ${
@@ -245,12 +298,13 @@ export default function DepositsPage() {
               <th className="p-3">NAV</th>
               <th className="p-3">الوثائق</th>
               <th className="p-3">ملاحظة</th>
+              <th className="p-3"></th>
             </tr>
           </thead>
           <tbody>
             {deposits.length === 0 && (
               <tr>
-                <td colSpan={7} className="p-8 text-center text-zinc-600">
+                <td colSpan={8} className="p-8 text-center text-zinc-600">
                   لسه مفيش إيداعات مسجلة
                 </td>
               </tr>
@@ -279,6 +333,22 @@ export default function DepositsPage() {
                       {d.units ? fmtNum(Number(d.units), 2) : '—'}
                     </td>
                     <td className="p-3 text-zinc-400">{d.reason || '—'}</td>
+                    <td className="p-3">
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => startEdit(d.id)}
+                          className="rounded-lg border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 transition-colors hover:border-amber-500 hover:text-amber-300"
+                        >
+                          تعديل
+                        </button>
+                        <button
+                          onClick={() => deleteDeposit(d.id)}
+                          className="rounded-lg border border-zinc-800 px-2.5 py-1 text-xs text-zinc-500 transition-colors hover:border-red-600 hover:text-red-400"
+                        >
+                          حذف
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
