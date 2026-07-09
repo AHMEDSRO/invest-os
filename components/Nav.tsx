@@ -9,7 +9,6 @@ const LINKS = [
   { href: '/market', label: 'السوق' },
   { href: '/portfolio', label: 'المحفظة' },
   { href: '/deposits', label: 'الإيداعات' },
-  { href: '/session', label: 'الجلسة الشهرية' },
   { href: '/chat', label: 'المستشار' },
 ];
 

@@ -208,7 +208,7 @@ export function buildAlerts(
     if (h.returnPct !== null && h.returnPct < -0.05) {
       alerts.push({
         level: 'warn',
-        text: `«${h.fund.name}» خسران ${(h.returnPct * 100).toFixed(1)}% — مش لازم تبيع بسرعة، بس راجعه في جلستك الجاية.`,
+        text: `«${h.fund.name}» خسران ${(h.returnPct * 100).toFixed(1)}% — مش لازم تبيع بسرعة، بس راجعه قبل قرار الشهر الجاي.`,
       });
     }
   }

@@ -44,7 +44,7 @@ export default function MarketPage() {
         <h1 className="text-xl font-bold">السوق</h1>
         <p className="text-xs text-zinc-500">
           بيانات لحظية من TradingView — للمتابعة والاطلاع، قرارك الشهري بيتاخد
-          من الجلسة الشهرية
+          من كارت «أستثمره فين؟» في الداشبورد
         </p>
       </div>
 
@@ -263,9 +263,12 @@ export default function MarketPage() {
               عايز تعرف تحط مبلغ معين فين؟
             </h2>
             <p className="text-sm leading-6 text-zinc-400">
-              روح على <span className="font-bold text-amber-300">الجلسة الشهرية</span>{' '}
-              ودخّل المبلغ بأي عملة (جنيه / درهم / دولار) — النظام هيحسبلك
-              التوزيع الأمثل حسب استراتيجيتك ونقطة التعادل. أو اسأل{' '}
+              ارجع للداشبورد واستخدم كارت{' '}
+              <span className="font-bold text-amber-300">
+                «معايا مبلغ الشهر ده — أستثمره فين؟»
+              </span>{' '}
+              — دخّل المبلغ بأي عملة (جنيه / درهم / دولار) وهيحددلك الصندوق
+              بالاسم حسب استراتيجيتك ونقطة التعادل. أو اسأل{' '}
               <span className="font-bold text-amber-300">المستشار</span> في
               الشات وهيرد عليك بأرقامك الفعلية.
             </p>
