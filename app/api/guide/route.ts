@@ -17,14 +17,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'غير مسجّل دخول' }, { status: 401 });
   }
 
-  const { amount, currency } = (await req.json()) as {
+  const { amount, currency, market } = (await req.json()) as {
     amount?: number;
     currency?: 'EGP' | 'AED' | 'USD';
+    market?: 'AUTO' | 'EG' | 'AE';
   };
   const amountNum = Number(amount);
   if (!amountNum || amountNum <= 0 || !currency) {
     return NextResponse.json({ error: 'مبلغ غير صالح' }, { status: 400 });
   }
+  const marketChoice: 'AUTO' | 'EG' | 'AE' =
+    market === 'EG' || market === 'AE' ? market : 'AUTO';
 
   const [settingsRes, fundsRes, depositsRes, valuationsRes, fxRes] =
     await Promise.all([
@@ -62,13 +65,30 @@ export async function POST(req: Request) {
         ? amountNum / summary.fxRate
         : amountNum * 3.6725;
 
-  const rec = recommendAllocation(budgetAED, summary, settings, funds);
-  const active = funds.filter((f) => f.is_active);
-  const egAvailable = active.some((f) => f.country === 'EG');
-  const aeAvailable = active.some((f) => f.country === 'AE');
+  // لو المستخدم اختار سوق معين، التحليل يتحصر فيه
+  const fundsForRec =
+    marketChoice === 'AUTO'
+      ? funds
+      : funds.filter((f) => f.country === marketChoice);
+
+  const rec = recommendAllocation(budgetAED, summary, settings, fundsForRec);
+  const active = fundsForRec.filter((f) => f.is_active);
+  const egAvailable = funds.some((f) => f.is_active && f.country === 'EG');
+  const aeAvailable = funds.some((f) => f.is_active && f.country === 'AE');
+
+  type DecisionLine = {
+    fundName: string;
+    platform: string;
+    country: 'EG' | 'AE';
+    amountNative: number;
+    currencyLabel: string;
+    amountAED: number;
+    afterYearNative: number;
+    hypothetical?: boolean;
+  };
 
   // ربط كل بند بصندوق حقيقي بالاسم من صناديق المستخدم المفعّلة
-  const decision = rec.lines.map((l) => {
+  let decision: DecisionLine[] = rec.lines.map((l) => {
     const fund =
       active.find(
         (f) =>
@@ -77,6 +97,7 @@ export async function POST(req: Request) {
       ) || active.find((f) => f.country === l.country);
     const isEG = l.country === 'EG';
     const amountNative = isEG ? l.amountAED * summary.fxRate : l.amountAED;
+    const yieldRate = isEG ? egYield : aeYield;
     return {
       fundName: fund?.name ?? l.label,
       platform: fund?.platform ?? (isEG ? 'Thndr' : 'Sarwa'),
@@ -84,8 +105,27 @@ export async function POST(req: Request) {
       amountNative: Math.round(amountNative),
       currencyLabel: isEG ? 'جنيه' : 'درهم',
       amountAED: Math.round(l.amountAED),
+      afterYearNative: Math.round(amountNative * (1 + yieldRate)),
     };
   });
+
+  // اختار الإمارات وهو لسه مفتحش حساب هناك → عرض توضيحي واضح
+  let hypotheticalAE = false;
+  if (marketChoice === 'AE' && decision.length === 0) {
+    hypotheticalAE = true;
+    decision = [
+      {
+        fundName: 'محفظة مُدارة (مثال: Sarwa) — محتاج تفتح حساب الأول',
+        platform: 'Sarwa',
+        country: 'AE',
+        amountNative: Math.round(budgetAED),
+        currencyLabel: 'درهم',
+        amountAED: Math.round(budgetAED),
+        afterYearNative: Math.round(budgetAED * (1 + aeYield)),
+        hypothetical: true,
+      },
+    ];
+  }
 
   // أسباب القرار — مبنية بالكود، مش بالـ AI
   const why: string[] = [];
@@ -94,7 +134,31 @@ export async function POST(req: Request) {
   const dPct = (d * 100).toFixed(1);
   const allEG = decision.every((l) => l.country === 'EG');
 
-  if (allEG) {
+  if (marketChoice === 'EG') {
+    why.push(
+      `ده ملخص السوق المصري اللي اخترته: العائد المتوقع في الصناديق النقدية حوالي ${egPct}% سنويًا بالجنيه — من غير أي رسوم تحويل عملة.`
+    );
+    why.push(
+      `للمقارنة: الإمارات متكسبش أكتر من مصر إلا لو الجنيه اتخفض أكتر من ${dPct}% في سنة واحدة.`
+    );
+  } else if (marketChoice === 'AE') {
+    why.push(
+      `ده ملخص سوق الإمارات اللي اخترته: العائد المتوقع حوالي ${aePct}% سنويًا بالدرهم — أقل من مصر، لكن بعملة مستقرة مربوطة بالدولار (حماية كاملة من تخفيض الجنيه).`
+    );
+    why.push(
+      `الإمارات بتكسب أكتر من مصر بس لو الجنيه اتخفض أكتر من ${dPct}% في سنة واحدة.`
+    );
+    if (currency === 'EGP') {
+      why.push(
+        'انتبه: تحويل مبلغ بالجنيه للإمارات عليه رسوم تحويل وفرق سعر صرف — بياكلوا نسبة ملحوظة من المبالغ الصغيرة.'
+      );
+    }
+    if (hypotheticalAE) {
+      why.push(
+        'ده عرض توضيحي بس — مفيش عندك حساب إماراتي مفعّل حاليًا. لو قررت تدخل الإمارات فعلًا، افتح حساب Sarwa الأول وضيف المحفظة من صفحة المحفظة.'
+      );
+    }
+  } else if (allEG) {
     why.push(
       `العائد المتوقع في صناديق مصر النقدية حوالي ${egPct}% سنويًا بالجنيه — مقابل حوالي ${aePct}% بس بالدرهم في الإمارات.`
     );
@@ -102,31 +166,40 @@ export async function POST(req: Request) {
       `الإمارات متكسبش أكتر من مصر إلا لو الجنيه اتخفض أكتر من ${dPct}% في سنة واحدة — وطول ما التوقع أقل من كده، مصر بتكسب.`
     );
   }
-  if (budgetAED < 500) {
+  if (budgetAED < 500 && !hypotheticalAE) {
     why.push(
       'مبلغك الشهري لسه صغير (أقل من 500 درهم) — التركيز في صندوق واحد أأمن وأبسط من التشتيت، ورسوم تحويل أي جزء منه للخارج هتاكل منه نسبة كبيرة.'
     );
   }
   for (const r of rec.rationale) {
-    if (!why.includes(r)) why.push(r);
+    if (!why.includes(r) && !hypotheticalAE) why.push(r);
   }
 
   // خطوات التنفيذ — حسب منصة كل بند
   const steps: string[] = [];
-  for (const line of decision) {
-    if (line.platform === 'Thndr') {
-      steps.push(
-        `افتح تطبيق ثاندر → قسم «صناديق الاستثمار» → دوّر على «${line.fundName}» → اشتري وثائق بمبلغ ${line.amountNative.toLocaleString('en-US')} ${line.currencyLabel}.`
-      );
-    } else {
-      steps.push(
-        `افتح تطبيق ${line.platform} → حوّل ${line.amountNative.toLocaleString('en-US')} ${line.currencyLabel} لمحفظتك المُدارة «${line.fundName}».`
-      );
+  if (hypotheticalAE) {
+    steps.push(
+      'افتح حساب على Sarwa (أو StashAway) — التسجيل أونلاين وبيحتاج إثبات هوية وإقامة.'
+    );
+    steps.push(
+      'بعد ما الحساب يتفعّل، ضيف المحفظة هنا من صفحة «المحفظة → + إضافة صندوق» — وساعتها التحليل هيحسبهالك بجد.'
+    );
+  } else {
+    for (const line of decision) {
+      if (line.platform === 'Thndr') {
+        steps.push(
+          `افتح تطبيق ثاندر → قسم «صناديق الاستثمار» → دوّر على «${line.fundName}» → اشتري وثائق بمبلغ ${line.amountNative.toLocaleString('en-US')} ${line.currencyLabel}.`
+        );
+      } else {
+        steps.push(
+          `افتح تطبيق ${line.platform} → حوّل ${line.amountNative.toLocaleString('en-US')} ${line.currencyLabel} لمحفظتك المُدارة «${line.fundName}».`
+        );
+      }
     }
+    steps.push(
+      'بعد ما تنفذ، ارجع هنا وسجّل الإيداع (من صفحة الإيداعات أو قول للمستشار في الشات) عشان يتحسب في محفظتك.'
+    );
   }
-  steps.push(
-    'بعد ما تنفذ، ارجع هنا وسجّل الإيداع (من صفحة الإيداعات أو قول للمستشار في الشات) عشان يتحسب في محفظتك.'
-  );
 
   return NextResponse.json({
     decision,

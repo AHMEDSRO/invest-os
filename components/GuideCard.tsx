@@ -5,6 +5,7 @@ import { currentMonth, fmtNum } from '@/lib/format';
 import { getSupabase } from '@/lib/supabase/client';
 
 type Currency = 'EGP' | 'AED' | 'USD';
+type Market = 'AUTO' | 'EG' | 'AE';
 
 type DecisionLine = {
   fundName: string;
@@ -13,6 +14,8 @@ type DecisionLine = {
   amountNative: number;
   currencyLabel: string;
   amountAED: number;
+  afterYearNative: number;
+  hypothetical?: boolean;
 };
 
 type Analysis = {
@@ -35,6 +38,7 @@ type Analysis = {
 export default function GuideCard() {
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState<Currency>('EGP');
+  const [market, setMarket] = useState<Market>('AUTO');
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +59,7 @@ export default function GuideCard() {
       const res = await fetch('/api/guide', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: amountNum, currency }),
+        body: JSON.stringify({ amount: amountNum, currency, market }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error || 'حصل خطأ — حاول تاني');
@@ -126,6 +130,15 @@ export default function GuideCard() {
           <option value="AED">درهم AED</option>
           <option value="USD">دولار USD</option>
         </select>
+        <select
+          value={market}
+          onChange={(e) => setMarket(e.target.value as Market)}
+          className="rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm outline-none focus:border-amber-500"
+        >
+          <option value="AUTO">🎯 الأنسب ليا</option>
+          <option value="EG">🇪🇬 مصر بس</option>
+          <option value="AE">🇦🇪 الإمارات بس</option>
+        </select>
         <button
           type="submit"
           disabled={loading || !parseFloat(amount)}
@@ -157,21 +170,29 @@ export default function GuideCard() {
                 مفيش صناديق مفعّلة — فعّل صناديقك من صفحة المحفظة الأول
               </p>
             ) : (
-              <ul className="space-y-2">
+              <ul className="space-y-3">
                 {analysis.decision.map((l, i) => (
-                  <li
-                    key={i}
-                    className="flex flex-wrap items-center justify-between gap-2 text-sm"
-                  >
-                    <span className="font-bold text-zinc-100">
-                      «{l.fundName}»
-                      <span className="mr-2 text-xs font-normal text-zinc-500">
-                        على {l.platform}
+                  <li key={i} className="text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-zinc-100">
+                        «{l.fundName}»
+                        <span className="mr-2 text-xs font-normal text-zinc-500">
+                          على {l.platform}
+                        </span>
+                        {l.hypothetical && (
+                          <span className="mr-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
+                            توضيحي
+                          </span>
+                        )}
                       </span>
-                    </span>
-                    <span className="num text-base font-black text-amber-300">
-                      {fmtNum(l.amountNative)} {l.currencyLabel}
-                    </span>
+                      <span className="num text-base font-black text-amber-300">
+                        {fmtNum(l.amountNative)} {l.currencyLabel}
+                      </span>
+                    </div>
+                    <p className="num mt-0.5 text-xs text-emerald-400/80">
+                      بعد سنة بالعائد المتوقع: ~{fmtNum(l.afterYearNative)}{' '}
+                      {l.currencyLabel}
+                    </p>
                   </li>
                 ))}
               </ul>
