@@ -60,8 +60,9 @@ export default function MoneyPage() {
     expense: emptyTxForm(),
   });
 
-  // سداد سريع من خطة الشهر: مبلغ لكل دين
-  const [quickPay, setQuickPay] = useState<Record<string, string>>({});
+  // سداد من خطة الشهر: اختيار دين + مبلغ
+  const [payTarget, setPayTarget] = useState<string>('');
+  const [payTargetAmount, setPayTargetAmount] = useState<string>('');
 
   // إضافة/تعديل دين
   const [showAddDebt, setShowAddDebt] = useState(false);
@@ -234,8 +235,8 @@ export default function MoneyPage() {
         .eq('id', debt.id);
     }
     setSaving(false);
-    setQuickPay((q) => ({ ...q, [debt.id]: '' }));
-    setPayForm({ date: todayISO(), amount: '', method: '' });
+    setPayTarget('');
+    setPayTargetAmount('');
     reload();
   }
 
@@ -371,8 +372,8 @@ export default function MoneyPage() {
     reload();
   }
 
-  // ===== مكوّن قسم دخل/مصروف في خطة الشهر =====
-  function txSection(type: TxType) {
+  // ===== مكوّن عمود دخل/مصروف — يُستخدم جنب بعض في نفس السكشن =====
+  function txColumn(type: TxType) {
     const f = txForms[type];
     const list = monthTx
       .filter((t) => t.type === type)
@@ -380,19 +381,19 @@ export default function MoneyPage() {
     const isIncome = type === 'income';
     return (
       <div
-        className={`rounded-2xl border p-4 md:p-5 ${
+        className={`rounded-xl border p-3 md:p-4 ${
           isIncome
             ? 'border-emerald-900/50 bg-emerald-950/10'
             : 'border-red-900/50 bg-red-950/10'
         }`}
       >
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2
+          <h3
             className={`text-sm font-bold ${isIncome ? 'text-emerald-300' : 'text-red-300'}`}
           >
-            {isIncome ? '١) الفلوس اللي داخلة ليك الشهر ده 🔺' : '٢) مصاريفك الشهر ده 🔻'}
-          </h2>
-          <p className="num text-sm font-bold text-zinc-300">
+            {isIncome ? 'الدخل 🔺' : 'المصاريف 🔻'}
+          </h3>
+          <p className="num text-xs font-bold text-zinc-300">
             {fmtNum(isIncome ? incomeEGP : expenseEGP)} EGP
             <span className="mx-1 text-zinc-600">+</span>
             {fmtNum(isIncome ? incomeAED : expenseAED)} AED
@@ -413,7 +414,7 @@ export default function MoneyPage() {
               }))
             }
             placeholder="المبلغ"
-            className={`${inputCls} w-28`}
+            className={`${inputCls} w-24`}
           />
           <select
             value={f.currency}
@@ -436,8 +437,8 @@ export default function MoneyPage() {
                 [type]: { ...f, category: e.target.value },
               }))
             }
-            placeholder={isIncome ? 'المصدر (مرتب/شحن…)' : 'البند (إيجار/أكل…)'}
-            className={`${inputCls} flex-1 basis-32`}
+            placeholder={isIncome ? 'المصدر' : 'البند'}
+            className={`${inputCls} flex-1 basis-24`}
           />
           <input
             type="date"
@@ -449,7 +450,7 @@ export default function MoneyPage() {
                 [type]: { ...f, date: e.target.value },
               }))
             }
-            className={inputCls}
+            className={`${inputCls} basis-full sm:basis-auto`}
           />
           <button
             onClick={() => saveTx(type)}
@@ -476,9 +477,7 @@ export default function MoneyPage() {
 
         {/* قائمة الشهر */}
         {list.length === 0 ? (
-          <p className="text-xs text-zinc-600">
-            لسه مسجلتش حاجة الشهر ده
-          </p>
+          <p className="text-xs text-zinc-600">لسه مسجلتش حاجة الشهر ده</p>
         ) : (
           <ul className="divide-y divide-zinc-800/50">
             {list.map((t) => (
@@ -545,6 +544,16 @@ export default function MoneyPage() {
       return pa.localeCompare(pb, 'ar') || remaining(b) - remaining(a);
     });
 
+  const onMeOpenDebts = openDebts
+    .filter((d) => d.direction === 'on_me')
+    .sort((a, b) => remaining(b) - remaining(a));
+  const selectedDebt = debts.find((d) => d.id === payTarget) || null;
+
+  async function paySelectedDebt() {
+    if (!selectedDebt) return;
+    await payDebt(selectedDebt, payTargetAmount);
+  }
+
   const filterChips: [DebtFilter, string][] = [
     ['ALL', 'الكل المفتوح'],
     ['ON_ME', '🔻 عليّا'],
@@ -582,99 +591,121 @@ export default function MoneyPage() {
       {/* ============ خطة الشهر ============ */}
       {tab === 'MONTH' && (
         <div className="space-y-4">
-          {txSection('income')}
-          {txSection('expense')}
+          {/* ١) الدخل والمصاريف جنب بعض — والباقي في آخر السكشن */}
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 md:p-5">
+            <h2 className="mb-3 text-sm font-bold text-zinc-200">
+              ١) دخلك ومصاريفك الشهر ده
+            </h2>
+            <div className="grid gap-3 md:grid-cols-2">
+              {txColumn('income')}
+              {txColumn('expense')}
+            </div>
 
-          {/* ٣) المتبقي والسداد */}
+            {/* الباقي بعد الطرح — نهاية السكشن */}
+            <div className="mt-4 rounded-xl border border-amber-600/40 bg-gradient-to-l from-zinc-950 to-amber-950/20 p-3 md:p-4">
+              <p className="mb-2 text-xs font-bold text-amber-300">
+                الباقي معاك بعد المصاريف (دخل − مصاريف − سداد الشهر)
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-center">
+                <div className="rounded-xl bg-zinc-950/70 p-3">
+                  <p className="text-[11px] text-zinc-500">بالجنيه</p>
+                  <p
+                    className={`num text-lg font-black ${leftoverEGP >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                  >
+                    {fmtNum(leftoverEGP)} EGP
+                  </p>
+                </div>
+                <div className="rounded-xl bg-zinc-950/70 p-3">
+                  <p className="text-[11px] text-zinc-500">بالدرهم</p>
+                  <p
+                    className={`num text-lg font-black ${leftoverAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                  >
+                    {fmtNum(leftoverAED)} AED
+                  </p>
+                </div>
+              </div>
+              {(debtPaidEGP > 0 || debtPaidAED > 0) && (
+                <p className="num mt-2 text-xs text-zinc-500">
+                  (اتخصم منه سداد ديون الشهر ده: {fmtNum(debtPaidEGP)} EGP +{' '}
+                  {fmtNum(debtPaidAED)} AED)
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* ٢) هتسدد مين من الباقي — اختيار من قائمة */}
           <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 to-amber-950/20 p-4 md:p-5">
             <h2 className="mb-3 text-sm font-bold text-amber-300">
-              ٣) الباقي معاك — وتسدد منه قد إيه؟
+              ٢) هتسدد مين من الباقي؟
             </h2>
 
-            <div className="mb-4 grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-xl bg-zinc-950/70 p-3">
-                <p className="text-[11px] text-zinc-500">باقي بالجنيه</p>
-                <p
-                  className={`num text-lg font-black ${leftoverEGP >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
-                >
-                  {fmtNum(leftoverEGP)}
-                </p>
-              </div>
-              <div className="rounded-xl bg-zinc-950/70 p-3">
-                <p className="text-[11px] text-zinc-500">باقي بالدرهم</p>
-                <p
-                  className={`num text-lg font-black ${leftoverAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
-                >
-                  {fmtNum(leftoverAED)}
-                </p>
-              </div>
-              <div className="rounded-xl bg-zinc-950/70 p-3">
-                <p className="text-[11px] text-zinc-500">الإجمالي (درهم)</p>
-                <p
-                  className={`num text-lg font-black ${leftoverUnified >= 0 ? 'text-amber-300' : 'text-red-300'}`}
-                >
-                  {fmtNum(leftoverUnified)}
-                </p>
-              </div>
-            </div>
-            {(debtPaidEGP > 0 || debtPaidAED > 0) && (
-              <p className="num mb-3 text-xs text-zinc-500">
-                (اتخصم منه سداد ديون الشهر ده: {fmtNum(debtPaidEGP)} EGP +{' '}
-                {fmtNum(debtPaidAED)} AED)
+            {onMeOpenDebts.length === 0 ? (
+              <p className="text-sm text-emerald-400">
+                مفيش ديون مفتوحة عليك 🎉
               </p>
-            )}
+            ) : (
+              <>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[220px] flex-1">
+                    <label className="mb-1 block text-xs text-zinc-400">
+                      اختار الشخص
+                    </label>
+                    <select
+                      value={payTarget}
+                      onChange={(e) => {
+                        setPayTarget(e.target.value);
+                        setPayTargetAmount('');
+                      }}
+                      className={`${inputCls} w-full`}
+                    >
+                      <option value="">— اختار من ديونك المفتوحة —</option>
+                      {onMeOpenDebts.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {personById.get(d.person_id)?.name} — باقي{' '}
+                          {fmtNum(remaining(d))} {d.currency}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-            {/* سداد سريع للديون المفتوحة عليك */}
-            <p className="mb-2 text-xs font-bold text-zinc-400">
-              ديونك المفتوحة — اكتب المبلغ اللي هتسدده جنب أي واحد:
-            </p>
-            <ul className="space-y-2">
-              {openDebts
-                .filter((d) => d.direction === 'on_me')
-                .sort((a, b) => remaining(b) - remaining(a))
-                .map((d) => (
-                  <li
-                    key={d.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-zinc-950/70 px-3 py-2"
-                  >
-                    <span className="text-sm text-zinc-200">
-                      {personById.get(d.person_id)?.name}
-                      <span className="num mr-2 text-xs text-red-300">
-                        باقي {fmtMoney(remaining(d), d.currency)}
-                      </span>
-                    </span>
-                    <span className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="any"
-                        dir="ltr"
-                        value={quickPay[d.id] || ''}
-                        onChange={(e) =>
-                          setQuickPay((q) => ({
-                            ...q,
-                            [d.id]: e.target.value,
-                          }))
-                        }
-                        placeholder="0"
-                        className={`${inputCls} w-24 py-1.5 text-xs`}
-                      />
+                  {selectedDebt && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-xs text-zinc-400">
+                          هتسدد كام
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          dir="ltr"
+                          value={payTargetAmount}
+                          onChange={(e) => setPayTargetAmount(e.target.value)}
+                          placeholder={`${selectedDebt.currency}`}
+                          className={`${inputCls} w-28`}
+                        />
+                      </div>
                       <button
-                        onClick={() => payDebt(d, quickPay[d.id] || '')}
-                        disabled={saving || !parseFloat(quickPay[d.id] || '')}
-                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-30"
+                        onClick={paySelectedDebt}
+                        disabled={saving || !parseFloat(payTargetAmount)}
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500 disabled:opacity-30"
                       >
                         سدّد ✓
                       </button>
+                    </>
+                  )}
+                </div>
+
+                {selectedDebt && (
+                  <p className="num mt-3 text-sm text-zinc-300">
+                    باقي على «{personById.get(selectedDebt.person_id)?.name}»
+                    :{' '}
+                    <span className="font-bold text-red-300">
+                      {fmtMoney(remaining(selectedDebt), selectedDebt.currency)}
                     </span>
-                  </li>
-                ))}
-              {openDebts.filter((d) => d.direction === 'on_me').length ===
-                0 && (
-                <li className="text-sm text-emerald-400">
-                  مفيش ديون مفتوحة عليك 🎉
-                </li>
-              )}
-            </ul>
+                  </p>
+                )}
+              </>
+            )}
 
             <p className="mt-4 rounded-xl bg-zinc-950/70 px-3 py-2.5 text-xs leading-6 text-zinc-400">
               💡 اللي يفضل معاك بعد المصاريف والسداد هو اللي تستثمره — روح
