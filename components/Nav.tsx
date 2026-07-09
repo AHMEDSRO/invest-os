@@ -6,6 +6,7 @@ import { getSupabase } from '@/lib/supabase/client';
 
 const LINKS = [
   { href: '/', label: 'الداشبورد' },
+  { href: '/money', label: 'الفلوس' },
   { href: '/market', label: 'السوق' },
   { href: '/portfolio', label: 'المحفظة' },
   { href: '/deposits', label: 'الإيداعات' },

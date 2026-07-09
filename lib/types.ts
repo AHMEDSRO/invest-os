@@ -85,3 +85,49 @@ export type ChatMessage = {
   content: string;
   created_at: string;
 };
+
+// ============ إدارة الفلوس ============
+
+export type Person = {
+  id: string;
+  name: string;
+  note: string | null;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type DebtDirection = 'on_me' | 'to_me';
+
+export type DebtRow = {
+  id: string;
+  person_id: string;
+  direction: DebtDirection;
+  title: string | null;
+  principal: number;
+  currency: Currency;
+  note: string | null;
+  status: 'open' | 'settled';
+  started_on: string | null;
+  created_at: string;
+};
+
+export type DebtPayment = {
+  id: string;
+  debt_id: string;
+  date: string;
+  amount: number;
+  method: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+export type Transaction = {
+  id: string;
+  date: string;
+  type: 'income' | 'expense';
+  category: string | null;
+  description: string | null;
+  amount: number;
+  currency: Currency;
+  created_at: string;
+};
