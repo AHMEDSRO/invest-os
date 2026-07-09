@@ -71,7 +71,7 @@ export default function SessionPage() {
         ? amountNum / egpPerAed
         : amountNum / usdPerAed;
 
-  const rec = recommendAllocation(budgetAED, summary, settings);
+  const rec = recommendAllocation(budgetAED, summary, settings, funds);
 
   function goToStep2() {
     if (budgetAED > 0) setStep(2);

@@ -210,45 +210,100 @@ export type Recommendation = {
 export function recommendAllocation(
   budgetAED: number,
   summary: PortfolioSummary,
-  settings: Settings
+  settings: Settings,
+  funds: Fund[]
 ): Recommendation {
   const rationale: string[] = [];
-  const newTotal = summary.totalValueAED + budgetAED;
 
-  // كام محتاجين نضيف لكل دولة عشان نوصل للوزن المستهدف بعد الإيداع؟
-  const egTargetValue = Number(settings.eg_target) * newTotal;
-  const egGapAED = Math.max(0, egTargetValue - summary.egValueAED);
-  let egAmount = Math.min(budgetAED, egGapAED);
-  let aeAmount = budgetAED - egAmount;
+  // التوصية تتقيد بالصناديق المفعّلة فعلًا — مفيش ترشيح لسوق مش متاح للمستخدم
+  const active = funds.filter((f) => f.is_active);
+  const egAvailable = active.some((f) => f.country === 'EG');
+  const aeAvailable = active.some((f) => f.country === 'AE');
 
-  // سقف التعرض لمصر
-  const cap = Number(settings.eg_exposure_cap);
-  const egAfter = summary.egValueAED + egAmount;
-  if (newTotal > 0 && egAfter / newTotal > cap) {
-    const maxEg = Math.max(0, cap * newTotal - summary.egValueAED);
-    rationale.push(
-      `سقف التعرض لمصر (${(cap * 100).toFixed(0)}%) قلّل نصيب مصر الشهر ده.`
-    );
-    egAmount = Math.min(egAmount, maxEg);
-    aeAmount = budgetAED - egAmount;
+  if (!egAvailable && !aeAvailable) {
+    return {
+      lines: [],
+      rationale: [
+        'مفيش أي صندوق مفعّل — ضيف صناديقك المتاحة من صفحة المحفظة الأول.',
+      ],
+    };
   }
 
-  // داخل مصر: نقدي × أسهم — الأبعد عن هدفه ياخد الأولوية
-  const egMM = summary.egByClassAED['money_market'] || 0;
-  const egValue = summary.egValueAED;
-  const egAfterDeposit = egValue + egAmount;
-  const mmTargetValue =
-    Number(settings.eg_money_market_target) * egAfterDeposit;
-  const mmGap = Math.max(0, mmTargetValue - egMM);
-  const egMMAmount = Math.min(egAmount, mmGap);
-  const egEqAmount = egAmount - egMMAmount;
+  const newTotal = summary.totalValueAED + budgetAED;
+  let egAmount: number;
+  let aeAmount: number;
+
+  if (!aeAvailable) {
+    egAmount = budgetAED;
+    aeAmount = 0;
+    rationale.push(
+      'الإمارات مش متاحة عندك حاليًا (مفيش صندوق إماراتي مفعّل) — فالمبلغ كله اتوجه لمصر.'
+    );
+  } else if (!egAvailable) {
+    egAmount = 0;
+    aeAmount = budgetAED;
+    rationale.push(
+      'مصر مش متاحة عندك حاليًا (مفيش صندوق مصري مفعّل) — فالمبلغ كله اتوجه للإمارات.'
+    );
+  } else {
+    // كام محتاجين نضيف لكل دولة عشان نوصل للوزن المستهدف بعد الإيداع؟
+    const egTargetValue = Number(settings.eg_target) * newTotal;
+    const egGapAED = Math.max(0, egTargetValue - summary.egValueAED);
+    egAmount = Math.min(budgetAED, egGapAED);
+    aeAmount = budgetAED - egAmount;
+
+    // سقف التعرض لمصر
+    const cap = Number(settings.eg_exposure_cap);
+    const egAfter = summary.egValueAED + egAmount;
+    if (newTotal > 0 && egAfter / newTotal > cap) {
+      const maxEg = Math.max(0, cap * newTotal - summary.egValueAED);
+      rationale.push(
+        `سقف التعرض لمصر (${(cap * 100).toFixed(0)}%) قلّل نصيب مصر الشهر ده.`
+      );
+      egAmount = Math.min(egAmount, maxEg);
+      aeAmount = budgetAED - egAmount;
+    }
+  }
+
+  // داخل مصر: التقسيم على الفئات المتاحة فعلًا بس
+  const hasMM = active.some(
+    (f) => f.country === 'EG' && f.asset_class === 'money_market'
+  );
+  const hasEq = active.some(
+    (f) => f.country === 'EG' && f.asset_class === 'equity'
+  );
+
+  let egMMAmount = 0;
+  let egEqAmount = 0;
+  if (egAmount > 0) {
+    if (hasMM && hasEq) {
+      const egMM = summary.egByClassAED['money_market'] || 0;
+      const egAfterDeposit = summary.egValueAED + egAmount;
+      const mmTargetValue =
+        Number(settings.eg_money_market_target) * egAfterDeposit;
+      const mmGap = Math.max(0, mmTargetValue - egMM);
+      egMMAmount = Math.min(egAmount, mmGap);
+      egEqAmount = egAmount - egMMAmount;
+    } else if (hasMM) {
+      egMMAmount = egAmount;
+      rationale.push(
+        'مفيش صندوق أسهم مصري مفعّل — فنصيب مصر كله راح للصندوق النقدي (الأضمن كبداية).'
+      );
+    } else if (hasEq) {
+      egEqAmount = egAmount;
+      rationale.push('مفيش صندوق نقدي مصري مفعّل — فنصيب مصر راح للأسهم.');
+    } else {
+      // فئات تانية بس (ذهب مثلًا) — نوجه لأول فئة متاحة
+      egMMAmount = egAmount;
+    }
+  }
 
   let lines: AllocationLine[] = [];
   if (egMMAmount > 0)
     lines.push({
       label: 'مصر — نقدي/سيولة',
       country: 'EG',
-      assetClass: 'money_market',
+      assetClass: hasMM ? 'money_market' : undefined,
       amountAED: egMMAmount,
     });
   if (egEqAmount > 0)
@@ -260,7 +315,7 @@ export function recommendAllocation(
     });
   if (aeAmount > 0)
     lines.push({
-      label: 'الإمارات — المحفظة العالمية',
+      label: 'الإمارات — المحفظة المُدارة',
       country: 'AE',
       amountAED: aeAmount,
     });

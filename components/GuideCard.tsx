@@ -1,18 +1,41 @@
 'use client';
 
 import { useState } from 'react';
-import { currentMonth } from '@/lib/format';
+import { currentMonth, fmtNum } from '@/lib/format';
 import { getSupabase } from '@/lib/supabase/client';
 
 type Currency = 'EGP' | 'AED' | 'USD';
 
-// «سؤال الشهر» — قلب التطبيق للمستثمر المبتدئ:
-// معايا مبلغ، أحطه فين؟ + إيه أخبار السوق؟
+type DecisionLine = {
+  fundName: string;
+  platform: string;
+  country: 'EG' | 'AE';
+  amountNative: number;
+  currencyLabel: string;
+  amountAED: number;
+};
+
+type Analysis = {
+  decision: DecisionLine[];
+  why: string[];
+  steps: string[];
+  comparison: {
+    egYieldPct: string;
+    aeYieldPct: string;
+    breakevenPct: string;
+    egAvailable: boolean;
+    aeAvailable: boolean;
+    fxRate: number;
+    budgetAED: number;
+  };
+  dStar: number;
+};
+
+// «تحليل الشهر» — قرار محسوب بالكود بأسماء صناديق حقيقية، مش شات
 export default function GuideCard() {
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState<Currency>('EGP');
-  const [answer, setAnswer] = useState<string | null>(null);
-  const [dStarValue, setDStarValue] = useState<number | null>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -26,7 +49,7 @@ export default function GuideCard() {
     if (!amountNum || amountNum <= 0 || loading) return;
     setLoading(true);
     setError(null);
-    setAnswer(null);
+    setAnalysis(null);
     setSaved(false);
     try {
       const res = await fetch('/api/guide', {
@@ -36,10 +59,7 @@ export default function GuideCard() {
       });
       const data = await res.json();
       if (!res.ok) setError(data.error || 'حصل خطأ — حاول تاني');
-      else {
-        setAnswer(data.answer);
-        setDStarValue(data.dStar ?? null);
-      }
+      else setAnalysis(data);
     } catch {
       setError('مشكلة في الاتصال — حاول تاني');
     }
@@ -47,12 +67,18 @@ export default function GuideCard() {
   }
 
   async function saveDecision() {
-    if (!answer || saved) return;
+    if (!analysis || saved) return;
+    const decisionText = analysis.decision
+      .map(
+        (l) =>
+          `- ${fmtNum(l.amountNative)} ${l.currencyLabel} في «${l.fundName}» على ${l.platform}`
+      )
+      .join('\n');
     const { error } = await getSupabase().from('monthly_reviews').insert({
       month: currentMonth(),
       market_summary: null,
-      decision: `ميزانية ${amount} ${currency} — رأي المرشد:\n${answer}`,
-      d_star: dStarValue,
+      decision: `ميزانية ${amount} ${currency}:\n${decisionText}`,
+      d_star: analysis.dStar,
     });
     if (!error) setSaved(true);
   }
@@ -77,8 +103,8 @@ export default function GuideCard() {
         💰 معايا مبلغ الشهر ده — أستثمره فين؟
       </h2>
       <p className="mt-1 text-xs text-zinc-400">
-        اكتب المبلغ بأي عملة والمرشد يحددلك السوق والصندوق بالاسم وليه وإزاي
-        تنفذ
+        تحليل محسوب بأرقامك، بيحددلك الصندوق بالاسم من صناديقك المفعّلة في
+        المحفظة
       </p>
 
       <form onSubmit={ask} className="mt-4 flex flex-wrap gap-2">
@@ -105,7 +131,7 @@ export default function GuideCard() {
           disabled={loading || !parseFloat(amount)}
           className="rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold text-zinc-950 transition-colors hover:bg-amber-400 disabled:opacity-40"
         >
-          {loading ? 'بيفكرلك…' : 'قولي أستثمر فين'}
+          {loading ? 'بيحسب…' : 'قولي أستثمر فين'}
         </button>
         <button
           type="button"
@@ -119,18 +145,87 @@ export default function GuideCard() {
 
       {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
 
-      {answer && (
-        <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/70 p-4">
-          <p className="whitespace-pre-wrap text-sm leading-7 text-zinc-200">
-            {answer}
-          </p>
-          <button
-            onClick={saveDecision}
-            disabled={saved}
-            className="mt-3 rounded-lg border border-amber-600/50 px-4 py-1.5 text-xs font-bold text-amber-300 transition-colors hover:bg-amber-500 hover:text-zinc-950 disabled:opacity-60"
-          >
-            {saved ? 'اتحفظ كقرار الشهر ✓' : 'احفظه كقرار الشهر'}
-          </button>
+      {analysis && (
+        <div className="mt-4 space-y-3">
+          {/* القرار */}
+          <div className="rounded-xl border border-amber-500/60 bg-zinc-950/80 p-4">
+            <p className="mb-2 text-xs font-bold text-amber-400">
+              ✅ قرار الشهر المقترح
+            </p>
+            {analysis.decision.length === 0 ? (
+              <p className="text-sm text-zinc-400">
+                مفيش صناديق مفعّلة — فعّل صناديقك من صفحة المحفظة الأول
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {analysis.decision.map((l, i) => (
+                  <li
+                    key={i}
+                    className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                  >
+                    <span className="font-bold text-zinc-100">
+                      «{l.fundName}»
+                      <span className="mr-2 text-xs font-normal text-zinc-500">
+                        على {l.platform}
+                      </span>
+                    </span>
+                    <span className="num text-base font-black text-amber-300">
+                      {fmtNum(l.amountNative)} {l.currencyLabel}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* ليه؟ */}
+          {analysis.why.length > 0 && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-4">
+              <p className="mb-2 text-xs font-bold text-zinc-300">
+                ليه ده أضمن اختيار؟
+              </p>
+              <ul className="space-y-1.5">
+                {analysis.why.map((w, i) => (
+                  <li key={i} className="text-sm leading-6 text-zinc-300">
+                    • {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* الخطوات */}
+          {analysis.steps.length > 0 && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-4">
+              <p className="mb-2 text-xs font-bold text-zinc-300">
+                تنفذها إزاي؟
+              </p>
+              <ol className="space-y-1.5">
+                {analysis.steps.map((s, i) => (
+                  <li key={i} className="text-sm leading-6 text-zinc-300">
+                    <span className="num font-bold text-amber-400">
+                      {i + 1}.
+                    </span>{' '}
+                    {s}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={saveDecision}
+              disabled={saved || analysis.decision.length === 0}
+              className="rounded-lg border border-amber-600/50 px-4 py-1.5 text-xs font-bold text-amber-300 transition-colors hover:bg-amber-500 hover:text-zinc-950 disabled:opacity-60"
+            >
+              {saved ? 'اتحفظ كقرار الشهر ✓' : 'احفظه كقرار الشهر'}
+            </button>
+            <p className="text-[11px] text-zinc-600">
+              تحليل آلي بأرقام استراتيجيتك — مش نصيحة مالية مرخّصة، والقرار
+              النهائي ليك
+            </p>
+          </div>
         </div>
       )}
 
