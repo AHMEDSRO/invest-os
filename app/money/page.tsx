@@ -3,17 +3,38 @@
 import { useMemo, useState } from 'react';
 import { fmtMoney, fmtNum, todayISO } from '@/lib/format';
 import { getSupabase } from '@/lib/supabase/client';
-import type { Currency, DebtDirection, DebtRow } from '@/lib/types';
+import type {
+  Currency,
+  DebtDirection,
+  DebtRow,
+  Transaction,
+} from '@/lib/types';
 import { useFinanceData } from '@/lib/useFinanceData';
 
-type Tab = 'OVERVIEW' | 'DEBTS' | 'TRANSACTIONS';
+type Tab = 'MONTH' | 'DEBTS' | 'OVERVIEW' | 'HISTORY';
 type DebtFilter = 'ALL' | 'ON_ME' | 'TO_ME' | 'SETTLED';
+type TxType = 'income' | 'expense';
 
 const toAED = (amount: number, currency: string, rate: number) =>
   currency === 'EGP' ? amount / rate : amount;
 
 const inputCls =
   'rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-amber-500';
+
+type TxFormState = {
+  id: string | null;
+  date: string;
+  amount: string;
+  currency: Currency;
+  category: string;
+};
+const emptyTxForm = (): TxFormState => ({
+  id: null,
+  date: todayISO(),
+  amount: '',
+  currency: 'EGP',
+  category: '',
+});
 
 export default function MoneyPage() {
   const {
@@ -27,13 +48,22 @@ export default function MoneyPage() {
     reload,
   } = useFinanceData();
 
-  const [tab, setTab] = useState<Tab>('OVERVIEW');
+  const [tab, setTab] = useState<Tab>('MONTH');
   const [filter, setFilter] = useState<DebtFilter>('ALL');
   const [search, setSearch] = useState('');
   const [expandedDebt, setExpandedDebt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // فورم إضافة دين جديد
+  // فورمات الدخل والمصاريف (لكل نوع فورم مستقل + وضع تعديل)
+  const [txForms, setTxForms] = useState<Record<TxType, TxFormState>>({
+    income: emptyTxForm(),
+    expense: emptyTxForm(),
+  });
+
+  // سداد سريع من خطة الشهر: مبلغ لكل دين
+  const [quickPay, setQuickPay] = useState<Record<string, string>>({});
+
+  // إضافة/تعديل دين
   const [showAddDebt, setShowAddDebt] = useState(false);
   const emptyDebtForm = {
     personName: '',
@@ -44,8 +74,6 @@ export default function MoneyPage() {
     note: '',
   };
   const [debtForm, setDebtForm] = useState(emptyDebtForm);
-
-  // فورم تعديل دين موجود
   const [editingDebt, setEditingDebt] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
     direction: 'on_me' as DebtDirection,
@@ -55,21 +83,15 @@ export default function MoneyPage() {
     note: '',
   });
 
-  // فورم سداد
+  // تعديل سداد
+  const [editingPayment, setEditingPayment] = useState<string | null>(null);
+  const [payEdit, setPayEdit] = useState({ date: '', amount: '', method: '' });
+
+  // سداد من صفحة الديون
   const [payForm, setPayForm] = useState({
     date: todayISO(),
     amount: '',
     method: '',
-  });
-
-  // فورم حركة
-  const [txForm, setTxForm] = useState({
-    date: todayISO(),
-    type: 'expense' as 'income' | 'expense',
-    category: '',
-    description: '',
-    amount: '',
-    currency: 'EGP' as Currency,
   });
 
   const paidByDebt = useMemo(() => {
@@ -92,6 +114,7 @@ export default function MoneyPage() {
     () => new Map(people.map((p) => [p.id, p])),
     [people]
   );
+  const debtById = useMemo(() => new Map(debts.map((d) => [d.id, d])), [debts]);
 
   if (loading)
     return <p className="py-20 text-center text-zinc-500">جاري التحميل…</p>;
@@ -116,38 +139,180 @@ export default function MoneyPage() {
     toMeAED -
     (toAED(onMeEGP, 'EGP', fxRate) + onMeAED);
 
+  // ===== حسابات الشهر الحالي =====
   const monthKey = todayISO().slice(0, 7);
   const monthTx = transactions.filter((t) => t.date.startsWith(monthKey));
-  const monthIncomeAED = monthTx
-    .filter((t) => t.type === 'income')
-    .reduce((s, t) => s + toAED(Number(t.amount), t.currency, fxRate), 0);
-  const monthExpenseAED = monthTx
-    .filter((t) => t.type === 'expense')
-    .reduce((s, t) => s + toAED(Number(t.amount), t.currency, fxRate), 0);
+  const sumTx = (type: TxType, currency: Currency) =>
+    monthTx
+      .filter((t) => t.type === type && t.currency === currency)
+      .reduce((s, t) => s + Number(t.amount), 0);
+  const incomeEGP = sumTx('income', 'EGP');
+  const incomeAED = sumTx('income', 'AED');
+  const expenseEGP = sumTx('expense', 'EGP');
+  const expenseAED = sumTx('expense', 'AED');
 
-  // فلترة جدول الديون
-  const visibleDebts = debts
-    .filter((d) => {
-      if (filter === 'ON_ME')
-        return d.direction === 'on_me' && d.status === 'open';
-      if (filter === 'TO_ME')
-        return d.direction === 'to_me' && d.status === 'open';
-      if (filter === 'SETTLED') return d.status === 'settled';
-      return d.status === 'open';
-    })
-    .filter((d) => {
-      if (!search.trim()) return true;
-      const person = personById.get(d.person_id)?.name || '';
-      return (
-        person.includes(search.trim()) ||
-        (d.title || '').includes(search.trim())
-      );
-    })
-    .sort((a, b) => {
-      const pa = personById.get(a.person_id)?.name || '';
-      const pb = personById.get(b.person_id)?.name || '';
-      return pa.localeCompare(pb, 'ar') || remaining(b) - remaining(a);
+  // سداد ديون (اللي عليك) المسجل الشهر ده — بيتخصم من المتبقي
+  const monthDebtPaid = (currency: Currency) =>
+    payments
+      .filter((p) => {
+        const d = debtById.get(p.debt_id);
+        return (
+          p.date.startsWith(monthKey) &&
+          d?.direction === 'on_me' &&
+          d?.currency === currency
+        );
+      })
+      .reduce((s, p) => s + Number(p.amount), 0);
+  const debtPaidEGP = monthDebtPaid('EGP');
+  const debtPaidAED = monthDebtPaid('AED');
+
+  const leftoverEGP = incomeEGP - expenseEGP - debtPaidEGP;
+  const leftoverAED = incomeAED - expenseAED - debtPaidAED;
+  const leftoverUnified = toAED(leftoverEGP, 'EGP', fxRate) + leftoverAED;
+
+  // ===== أفعال =====
+
+  async function saveTx(type: TxType) {
+    const f = txForms[type];
+    const amount = parseFloat(f.amount);
+    if (!amount || amount <= 0) return;
+    setSaving(true);
+    const supabase = getSupabase();
+    const payload = {
+      date: f.date,
+      type,
+      category: f.category || null,
+      description: null,
+      amount,
+      currency: f.currency,
+    };
+    if (f.id) {
+      await supabase.from('transactions').update(payload).eq('id', f.id);
+    } else {
+      await supabase.from('transactions').insert(payload);
+    }
+    setSaving(false);
+    setTxForms((prev) => ({ ...prev, [type]: emptyTxForm() }));
+    reload();
+  }
+
+  function editTx(t: Transaction) {
+    setTxForms((prev) => ({
+      ...prev,
+      [t.type]: {
+        id: t.id,
+        date: t.date,
+        amount: String(t.amount),
+        currency: t.currency,
+        category: t.category || '',
+      },
+    }));
+    if (tab === 'HISTORY') setTab('MONTH');
+  }
+
+  async function deleteTx(id: string) {
+    if (!window.confirm('امسح الحركة دي؟')) return;
+    await getSupabase().from('transactions').delete().eq('id', id);
+    reload();
+  }
+
+  async function payDebt(debt: DebtRow, amountStr: string, method = '') {
+    const amount = parseFloat(amountStr);
+    if (!amount || amount <= 0) return;
+    setSaving(true);
+    const supabase = getSupabase();
+    await supabase.from('debt_payments').insert({
+      debt_id: debt.id,
+      date: todayISO(),
+      amount,
+      method: method || null,
     });
+    if ((paidByDebt.get(debt.id) || 0) + amount >= Number(debt.principal)) {
+      await supabase
+        .from('debts')
+        .update({ status: 'settled' })
+        .eq('id', debt.id);
+    }
+    setSaving(false);
+    setQuickPay((q) => ({ ...q, [debt.id]: '' }));
+    setPayForm({ date: todayISO(), amount: '', method: '' });
+    reload();
+  }
+
+  async function addPaymentDated(debt: DebtRow) {
+    const amount = parseFloat(payForm.amount);
+    if (!amount || amount <= 0) return;
+    setSaving(true);
+    const supabase = getSupabase();
+    await supabase.from('debt_payments').insert({
+      debt_id: debt.id,
+      date: payForm.date,
+      amount,
+      method: payForm.method || null,
+    });
+    if ((paidByDebt.get(debt.id) || 0) + amount >= Number(debt.principal)) {
+      await supabase
+        .from('debts')
+        .update({ status: 'settled' })
+        .eq('id', debt.id);
+    }
+    setSaving(false);
+    setPayForm({ date: todayISO(), amount: '', method: '' });
+    reload();
+  }
+
+  async function savePaymentEdit(id: string) {
+    const amount = parseFloat(payEdit.amount);
+    if (!amount || amount <= 0 || !payEdit.date) return;
+    await getSupabase()
+      .from('debt_payments')
+      .update({
+        date: payEdit.date,
+        amount,
+        method: payEdit.method || null,
+      })
+      .eq('id', id);
+    setEditingPayment(null);
+    reload();
+  }
+
+  async function deletePayment(id: string) {
+    if (!window.confirm('امسح السداد ده؟')) return;
+    await getSupabase().from('debt_payments').delete().eq('id', id);
+    reload();
+  }
+
+  async function addDebt(e: React.FormEvent) {
+    e.preventDefault();
+    const principal = parseFloat(debtForm.principal);
+    const name = debtForm.personName.trim();
+    if (!name || !principal || principal <= 0) return;
+    setSaving(true);
+    const supabase = getSupabase();
+    let personId = people.find((p) => p.name === name)?.id;
+    if (!personId) {
+      const { data } = await supabase
+        .from('people')
+        .insert({ name })
+        .select('id')
+        .single();
+      personId = (data as { id: string } | null)?.id;
+    }
+    if (personId) {
+      await supabase.from('debts').insert({
+        person_id: personId,
+        direction: debtForm.direction,
+        title: debtForm.title || name,
+        principal,
+        currency: debtForm.currency,
+        note: debtForm.note || null,
+      });
+    }
+    setSaving(false);
+    setShowAddDebt(false);
+    setDebtForm(emptyDebtForm);
+    reload();
+  }
 
   function startEditDebt(d: DebtRow) {
     setEditingDebt(d.id);
@@ -187,61 +352,6 @@ export default function MoneyPage() {
     reload();
   }
 
-  async function addDebt(e: React.FormEvent) {
-    e.preventDefault();
-    const principal = parseFloat(debtForm.principal);
-    const name = debtForm.personName.trim();
-    if (!name || !principal || principal <= 0) return;
-    setSaving(true);
-    const supabase = getSupabase();
-    let personId = people.find((p) => p.name === name)?.id;
-    if (!personId) {
-      const { data } = await supabase
-        .from('people')
-        .insert({ name })
-        .select('id')
-        .single();
-      personId = (data as { id: string } | null)?.id;
-    }
-    if (personId) {
-      await supabase.from('debts').insert({
-        person_id: personId,
-        direction: debtForm.direction,
-        title: debtForm.title || name,
-        principal,
-        currency: debtForm.currency,
-        note: debtForm.note || null,
-      });
-    }
-    setSaving(false);
-    setShowAddDebt(false);
-    setDebtForm(emptyDebtForm);
-    reload();
-  }
-
-  async function addPayment(debt: DebtRow) {
-    const amount = parseFloat(payForm.amount);
-    if (!amount || amount <= 0) return;
-    setSaving(true);
-    const supabase = getSupabase();
-    await supabase.from('debt_payments').insert({
-      debt_id: debt.id,
-      date: payForm.date,
-      amount,
-      method: payForm.method || null,
-    });
-    const paidAfter = (paidByDebt.get(debt.id) || 0) + amount;
-    if (paidAfter >= Number(debt.principal)) {
-      await supabase
-        .from('debts')
-        .update({ status: 'settled' })
-        .eq('id', debt.id);
-    }
-    setSaving(false);
-    setPayForm({ date: todayISO(), amount: '', method: '' });
-    reload();
-  }
-
   async function toggleSettled(debt: DebtRow) {
     await getSupabase()
       .from('debts')
@@ -261,35 +371,179 @@ export default function MoneyPage() {
     reload();
   }
 
-  async function deletePayment(id: string) {
-    if (!window.confirm('امسح السداد ده؟')) return;
-    await getSupabase().from('debt_payments').delete().eq('id', id);
-    reload();
+  // ===== مكوّن قسم دخل/مصروف في خطة الشهر =====
+  function txSection(type: TxType) {
+    const f = txForms[type];
+    const list = monthTx
+      .filter((t) => t.type === type)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    const isIncome = type === 'income';
+    return (
+      <div
+        className={`rounded-2xl border p-4 md:p-5 ${
+          isIncome
+            ? 'border-emerald-900/50 bg-emerald-950/10'
+            : 'border-red-900/50 bg-red-950/10'
+        }`}
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2
+            className={`text-sm font-bold ${isIncome ? 'text-emerald-300' : 'text-red-300'}`}
+          >
+            {isIncome ? '١) الفلوس اللي داخلة ليك الشهر ده 🔺' : '٢) مصاريفك الشهر ده 🔻'}
+          </h2>
+          <p className="num text-sm font-bold text-zinc-300">
+            {fmtNum(isIncome ? incomeEGP : expenseEGP)} EGP
+            <span className="mx-1 text-zinc-600">+</span>
+            {fmtNum(isIncome ? incomeAED : expenseAED)} AED
+          </p>
+        </div>
+
+        {/* فورم إضافة/تعديل */}
+        <div className="mb-3 flex flex-wrap gap-2">
+          <input
+            type="number"
+            step="any"
+            dir="ltr"
+            value={f.amount}
+            onChange={(e) =>
+              setTxForms((p) => ({
+                ...p,
+                [type]: { ...f, amount: e.target.value },
+              }))
+            }
+            placeholder="المبلغ"
+            className={`${inputCls} w-28`}
+          />
+          <select
+            value={f.currency}
+            onChange={(e) =>
+              setTxForms((p) => ({
+                ...p,
+                [type]: { ...f, currency: e.target.value as Currency },
+              }))
+            }
+            className={inputCls}
+          >
+            <option value="EGP">جنيه</option>
+            <option value="AED">درهم</option>
+          </select>
+          <input
+            value={f.category}
+            onChange={(e) =>
+              setTxForms((p) => ({
+                ...p,
+                [type]: { ...f, category: e.target.value },
+              }))
+            }
+            placeholder={isIncome ? 'المصدر (مرتب/شحن…)' : 'البند (إيجار/أكل…)'}
+            className={`${inputCls} flex-1 basis-32`}
+          />
+          <input
+            type="date"
+            dir="ltr"
+            value={f.date}
+            onChange={(e) =>
+              setTxForms((p) => ({
+                ...p,
+                [type]: { ...f, date: e.target.value },
+              }))
+            }
+            className={inputCls}
+          />
+          <button
+            onClick={() => saveTx(type)}
+            disabled={saving || !parseFloat(f.amount)}
+            className={`rounded-lg px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-40 ${
+              isIncome
+                ? 'bg-emerald-500 hover:bg-emerald-400'
+                : 'bg-red-400 hover:bg-red-300'
+            }`}
+          >
+            {f.id ? 'حفظ التعديل' : '+ أضف'}
+          </button>
+          {f.id && (
+            <button
+              onClick={() =>
+                setTxForms((p) => ({ ...p, [type]: emptyTxForm() }))
+              }
+              className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400"
+            >
+              إلغاء
+            </button>
+          )}
+        </div>
+
+        {/* قائمة الشهر */}
+        {list.length === 0 ? (
+          <p className="text-xs text-zinc-600">
+            لسه مسجلتش حاجة الشهر ده
+          </p>
+        ) : (
+          <ul className="divide-y divide-zinc-800/50">
+            {list.map((t) => (
+              <li
+                key={t.id}
+                className="flex items-center justify-between gap-2 py-2 text-sm"
+              >
+                <span className="text-zinc-300">
+                  {t.category || (isIncome ? 'دخل' : 'مصروف')}
+                  <span className="num mr-2 text-xs text-zinc-600">
+                    {t.date.slice(5)}
+                  </span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <span
+                    className={`num font-bold ${isIncome ? 'text-emerald-300' : 'text-red-300'}`}
+                  >
+                    {fmtMoney(Number(t.amount), t.currency)}
+                  </span>
+                  <button
+                    onClick={() => editTx(t)}
+                    className="text-zinc-600 hover:text-amber-300"
+                    title="تعديل"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    onClick={() => deleteTx(t.id)}
+                    className="text-zinc-600 hover:text-red-400"
+                    title="مسح"
+                  >
+                    ✕
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
   }
 
-  async function addTransaction(e: React.FormEvent) {
-    e.preventDefault();
-    const amount = parseFloat(txForm.amount);
-    if (!amount || amount <= 0) return;
-    setSaving(true);
-    await getSupabase().from('transactions').insert({
-      date: txForm.date,
-      type: txForm.type,
-      category: txForm.category || null,
-      description: txForm.description || null,
-      amount,
-      currency: txForm.currency,
+  // فلترة دفتر الديون
+  const visibleDebts = debts
+    .filter((d) => {
+      if (filter === 'ON_ME')
+        return d.direction === 'on_me' && d.status === 'open';
+      if (filter === 'TO_ME')
+        return d.direction === 'to_me' && d.status === 'open';
+      if (filter === 'SETTLED') return d.status === 'settled';
+      return d.status === 'open';
+    })
+    .filter((d) => {
+      if (!search.trim()) return true;
+      const person = personById.get(d.person_id)?.name || '';
+      return (
+        person.includes(search.trim()) ||
+        (d.title || '').includes(search.trim())
+      );
+    })
+    .sort((a, b) => {
+      const pa = personById.get(a.person_id)?.name || '';
+      const pb = personById.get(b.person_id)?.name || '';
+      return pa.localeCompare(pb, 'ar') || remaining(b) - remaining(a);
     });
-    setSaving(false);
-    setTxForm((f) => ({ ...f, amount: '', description: '' }));
-    reload();
-  }
-
-  async function deleteTransaction(id: string) {
-    if (!window.confirm('امسح الحركة دي؟')) return;
-    await getSupabase().from('transactions').delete().eq('id', id);
-    reload();
-  }
 
   const filterChips: [DebtFilter, string][] = [
     ['ALL', 'الكل المفتوح'],
@@ -302,13 +556,13 @@ export default function MoneyPage() {
     <div className="space-y-5">
       <h1 className="text-xl font-bold">الفلوس</h1>
 
-      {/* التبويبات */}
-      <div className="flex gap-2 rounded-2xl border border-zinc-800 bg-zinc-900 p-1.5">
+      <div className="flex gap-1.5 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900 p-1.5 md:gap-2">
         {(
           [
-            ['OVERVIEW', '📊 نظرة عامة'],
+            ['MONTH', '📅 خطة الشهر'],
             ['DEBTS', '🤝 الديون'],
-            ['TRANSACTIONS', '💸 الدخل والمصاريف'],
+            ['OVERVIEW', '📊 نظرة عامة'],
+            ['HISTORY', '🗂 كل الحركات'],
           ] as [Tab, string][]
         ).map(([key, label]) => (
           <button
@@ -325,107 +579,114 @@ export default function MoneyPage() {
         ))}
       </div>
 
-      {/* ===== نظرة عامة ===== */}
-      {tab === 'OVERVIEW' && (
+      {/* ============ خطة الشهر ============ */}
+      {tab === 'MONTH' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <div className="rounded-2xl border border-red-900/50 bg-red-950/20 p-4">
-              <p className="text-xs text-red-300/80">🔻 عليك (مفتوح)</p>
-              <p className="num mt-1 text-lg font-bold text-red-300">
-                {fmtNum(onMeEGP)} EGP
-              </p>
-              <p className="num text-sm text-red-300/70">
-                + {fmtNum(onMeAED)} AED
-              </p>
-            </div>
-            <div className="rounded-2xl border border-emerald-900/50 bg-emerald-950/20 p-4">
-              <p className="text-xs text-emerald-300/80">🔺 ليك عند الناس</p>
-              <p className="num mt-1 text-lg font-bold text-emerald-300">
-                {fmtNum(toMeEGP)} EGP
-              </p>
-              <p className="num text-sm text-emerald-300/70">
-                + {fmtNum(toMeAED)} AED
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-              <p className="text-xs text-zinc-400">صافي الديون (بالدرهم)</p>
-              <p
-                className={`num mt-1 text-lg font-bold ${netAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
-              >
-                {fmtNum(netAED)} AED
-              </p>
-              <p className="text-xs text-zinc-600">اللي ليك ناقص اللي عليك</p>
-            </div>
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-              <p className="text-xs text-zinc-400">صافي الشهر ده (بالدرهم)</p>
-              <p
-                className={`num mt-1 text-lg font-bold ${monthIncomeAED - monthExpenseAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
-              >
-                {fmtNum(monthIncomeAED - monthExpenseAED)} AED
-              </p>
-              <p className="num text-xs text-zinc-600">
-                دخل {fmtNum(monthIncomeAED)} − مصاريف {fmtNum(monthExpenseAED)}
-              </p>
-            </div>
-          </div>
+          {txSection('income')}
+          {txSection('expense')}
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-3 text-sm font-bold text-red-300">
-                🔻 أكبر الديون عليك
-              </h2>
-              <ul className="space-y-2">
-                {openDebts
-                  .filter((d) => d.direction === 'on_me')
-                  .sort((a, b) => remaining(b) - remaining(a))
-                  .slice(0, 5)
-                  .map((d) => (
-                    <li
-                      key={d.id}
-                      className="flex items-center justify-between text-sm"
-                    >
-                      <span className="text-zinc-300">
-                        {personById.get(d.person_id)?.name}
-                      </span>
-                      <span className="num font-bold text-red-300">
-                        {fmtMoney(remaining(d), d.currency)}
-                      </span>
-                    </li>
-                  ))}
-              </ul>
+          {/* ٣) المتبقي والسداد */}
+          <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 to-amber-950/20 p-4 md:p-5">
+            <h2 className="mb-3 text-sm font-bold text-amber-300">
+              ٣) الباقي معاك — وتسدد منه قد إيه؟
+            </h2>
+
+            <div className="mb-4 grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-xl bg-zinc-950/70 p-3">
+                <p className="text-[11px] text-zinc-500">باقي بالجنيه</p>
+                <p
+                  className={`num text-lg font-black ${leftoverEGP >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                >
+                  {fmtNum(leftoverEGP)}
+                </p>
+              </div>
+              <div className="rounded-xl bg-zinc-950/70 p-3">
+                <p className="text-[11px] text-zinc-500">باقي بالدرهم</p>
+                <p
+                  className={`num text-lg font-black ${leftoverAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                >
+                  {fmtNum(leftoverAED)}
+                </p>
+              </div>
+              <div className="rounded-xl bg-zinc-950/70 p-3">
+                <p className="text-[11px] text-zinc-500">الإجمالي (درهم)</p>
+                <p
+                  className={`num text-lg font-black ${leftoverUnified >= 0 ? 'text-amber-300' : 'text-red-300'}`}
+                >
+                  {fmtNum(leftoverUnified)}
+                </p>
+              </div>
             </div>
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-3 text-sm font-bold text-emerald-300">
-                🔺 أكبر المستحقات ليك
-              </h2>
-              <ul className="space-y-2">
-                {openDebts
-                  .filter((d) => d.direction === 'to_me')
-                  .sort((a, b) => remaining(b) - remaining(a))
-                  .slice(0, 5)
-                  .map((d) => (
-                    <li
-                      key={d.id}
-                      className="flex items-center justify-between text-sm"
-                    >
-                      <span className="text-zinc-300">
-                        {personById.get(d.person_id)?.name} — {d.title}
+            {(debtPaidEGP > 0 || debtPaidAED > 0) && (
+              <p className="num mb-3 text-xs text-zinc-500">
+                (اتخصم منه سداد ديون الشهر ده: {fmtNum(debtPaidEGP)} EGP +{' '}
+                {fmtNum(debtPaidAED)} AED)
+              </p>
+            )}
+
+            {/* سداد سريع للديون المفتوحة عليك */}
+            <p className="mb-2 text-xs font-bold text-zinc-400">
+              ديونك المفتوحة — اكتب المبلغ اللي هتسدده جنب أي واحد:
+            </p>
+            <ul className="space-y-2">
+              {openDebts
+                .filter((d) => d.direction === 'on_me')
+                .sort((a, b) => remaining(b) - remaining(a))
+                .map((d) => (
+                  <li
+                    key={d.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-zinc-950/70 px-3 py-2"
+                  >
+                    <span className="text-sm text-zinc-200">
+                      {personById.get(d.person_id)?.name}
+                      <span className="num mr-2 text-xs text-red-300">
+                        باقي {fmtMoney(remaining(d), d.currency)}
                       </span>
-                      <span className="num font-bold text-emerald-300">
-                        {fmtMoney(remaining(d), d.currency)}
-                      </span>
-                    </li>
-                  ))}
-              </ul>
-            </div>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="any"
+                        dir="ltr"
+                        value={quickPay[d.id] || ''}
+                        onChange={(e) =>
+                          setQuickPay((q) => ({
+                            ...q,
+                            [d.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="0"
+                        className={`${inputCls} w-24 py-1.5 text-xs`}
+                      />
+                      <button
+                        onClick={() => payDebt(d, quickPay[d.id] || '')}
+                        disabled={saving || !parseFloat(quickPay[d.id] || '')}
+                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-30"
+                      >
+                        سدّد ✓
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              {openDebts.filter((d) => d.direction === 'on_me').length ===
+                0 && (
+                <li className="text-sm text-emerald-400">
+                  مفيش ديون مفتوحة عليك 🎉
+                </li>
+              )}
+            </ul>
+
+            <p className="mt-4 rounded-xl bg-zinc-950/70 px-3 py-2.5 text-xs leading-6 text-zinc-400">
+              💡 اللي يفضل معاك بعد المصاريف والسداد هو اللي تستثمره — روح
+              للداشبورد واكتبه في كارت «أستثمره فين؟»
+            </p>
           </div>
         </div>
       )}
 
-      {/* ===== الديون: دفتر حسابات ===== */}
+      {/* ============ الديون (دفتر الحسابات) ============ */}
       {tab === 'DEBTS' && (
         <div className="space-y-4">
-          {/* الفلاتر والبحث */}
           <div className="flex flex-wrap items-center gap-2">
             {filterChips.map(([key, label]) => (
               <button
@@ -530,7 +791,6 @@ export default function MoneyPage() {
             </form>
           )}
 
-          {/* الجدول */}
           <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900">
             <table className="w-full min-w-[760px] text-sm">
               <thead>
@@ -626,7 +886,6 @@ export default function MoneyPage() {
                               </p>
                             )}
 
-                            {/* تعديل الدين */}
                             {isEditing ? (
                               <div className="mb-4 grid gap-2 rounded-xl border border-amber-600/40 bg-zinc-900 p-3 md:grid-cols-5">
                                 <select
@@ -735,7 +994,6 @@ export default function MoneyPage() {
                               </div>
                             )}
 
-                            {/* تسجيل سداد */}
                             {d.status === 'open' && (
                               <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl bg-zinc-900 p-3">
                                 <span className="text-xs font-bold text-zinc-400">
@@ -775,11 +1033,11 @@ export default function MoneyPage() {
                                       method: e.target.value,
                                     })
                                   }
-                                  placeholder="الطريقة (فودافون/يد بيد…)"
-                                  className={`${inputCls} w-40 text-xs`}
+                                  placeholder="الطريقة"
+                                  className={`${inputCls} w-36 text-xs`}
                                 />
                                 <button
-                                  onClick={() => addPayment(d)}
+                                  onClick={() => addPaymentDated(d)}
                                   disabled={
                                     saving || !parseFloat(payForm.amount)
                                   }
@@ -790,7 +1048,6 @@ export default function MoneyPage() {
                               </div>
                             )}
 
-                            {/* تاريخ السدادات */}
                             {debtPayments.length > 0 ? (
                               <table className="w-full text-xs">
                                 <thead>
@@ -802,28 +1059,112 @@ export default function MoneyPage() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {debtPayments.map((p) => (
-                                    <tr
-                                      key={p.id}
-                                      className="border-t border-zinc-800/50"
-                                    >
-                                      <td className="num py-1.5">{p.date}</td>
-                                      <td className="num py-1.5 font-bold text-zinc-200">
-                                        {fmtNum(Number(p.amount))}
-                                      </td>
-                                      <td className="py-1.5 text-zinc-400">
-                                        {p.method || p.note || '—'}
-                                      </td>
-                                      <td className="py-1.5 text-left">
-                                        <button
-                                          onClick={() => deletePayment(p.id)}
-                                          className="text-zinc-600 hover:text-red-400"
-                                        >
-                                          ✕
-                                        </button>
-                                      </td>
-                                    </tr>
-                                  ))}
+                                  {debtPayments.map((p) =>
+                                    editingPayment === p.id ? (
+                                      <tr
+                                        key={p.id}
+                                        className="border-t border-zinc-800/50 bg-zinc-900"
+                                      >
+                                        <td className="py-1.5">
+                                          <input
+                                            type="date"
+                                            dir="ltr"
+                                            value={payEdit.date}
+                                            onChange={(e) =>
+                                              setPayEdit({
+                                                ...payEdit,
+                                                date: e.target.value,
+                                              })
+                                            }
+                                            className={`${inputCls} py-1 text-xs`}
+                                          />
+                                        </td>
+                                        <td className="py-1.5">
+                                          <input
+                                            type="number"
+                                            step="any"
+                                            dir="ltr"
+                                            value={payEdit.amount}
+                                            onChange={(e) =>
+                                              setPayEdit({
+                                                ...payEdit,
+                                                amount: e.target.value,
+                                              })
+                                            }
+                                            className={`${inputCls} w-24 py-1 text-xs`}
+                                          />
+                                        </td>
+                                        <td className="py-1.5">
+                                          <input
+                                            value={payEdit.method}
+                                            onChange={(e) =>
+                                              setPayEdit({
+                                                ...payEdit,
+                                                method: e.target.value,
+                                              })
+                                            }
+                                            className={`${inputCls} w-32 py-1 text-xs`}
+                                          />
+                                        </td>
+                                        <td className="py-1.5 text-left">
+                                          <button
+                                            onClick={() =>
+                                              savePaymentEdit(p.id)
+                                            }
+                                            className="ml-2 font-bold text-emerald-400"
+                                          >
+                                            حفظ
+                                          </button>
+                                          <button
+                                            onClick={() =>
+                                              setEditingPayment(null)
+                                            }
+                                            className="text-zinc-500"
+                                          >
+                                            إلغاء
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ) : (
+                                      <tr
+                                        key={p.id}
+                                        className="border-t border-zinc-800/50"
+                                      >
+                                        <td className="num py-1.5">
+                                          {p.date}
+                                        </td>
+                                        <td className="num py-1.5 font-bold text-zinc-200">
+                                          {fmtNum(Number(p.amount))}
+                                        </td>
+                                        <td className="py-1.5 text-zinc-400">
+                                          {p.method || p.note || '—'}
+                                        </td>
+                                        <td className="py-1.5 text-left">
+                                          <button
+                                            onClick={() => {
+                                              setEditingPayment(p.id);
+                                              setPayEdit({
+                                                date: p.date,
+                                                amount: String(p.amount),
+                                                method: p.method || '',
+                                              });
+                                            }}
+                                            className="ml-2 text-zinc-600 hover:text-amber-300"
+                                          >
+                                            ✏️
+                                          </button>
+                                          <button
+                                            onClick={() =>
+                                              deletePayment(p.id)
+                                            }
+                                            className="text-zinc-600 hover:text-red-400"
+                                          >
+                                            ✕
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    )
+                                  )}
                                 </tbody>
                               </table>
                             ) : (
@@ -843,141 +1184,170 @@ export default function MoneyPage() {
         </div>
       )}
 
-      {/* ===== الدخل والمصاريف ===== */}
-      {tab === 'TRANSACTIONS' && (
+      {/* ============ نظرة عامة ============ */}
+      {tab === 'OVERVIEW' && (
         <div className="space-y-4">
-          <form
-            onSubmit={addTransaction}
-            className="grid gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 md:grid-cols-6"
-          >
-            <select
-              value={txForm.type}
-              onChange={(e) =>
-                setTxForm({
-                  ...txForm,
-                  type: e.target.value as 'income' | 'expense',
-                })
-              }
-              className={inputCls}
-            >
-              <option value="expense">مصروف 🔻</option>
-              <option value="income">دخل 🔺</option>
-            </select>
-            <input
-              type="date"
-              dir="ltr"
-              value={txForm.date}
-              onChange={(e) => setTxForm({ ...txForm, date: e.target.value })}
-              className={inputCls}
-            />
-            <input
-              type="number"
-              step="any"
-              dir="ltr"
-              value={txForm.amount}
-              onChange={(e) => setTxForm({ ...txForm, amount: e.target.value })}
-              placeholder="المبلغ"
-              required
-              className={inputCls}
-            />
-            <select
-              value={txForm.currency}
-              onChange={(e) =>
-                setTxForm({ ...txForm, currency: e.target.value as Currency })
-              }
-              className={inputCls}
-            >
-              <option value="EGP">جنيه</option>
-              <option value="AED">درهم</option>
-            </select>
-            <input
-              value={txForm.category}
-              onChange={(e) =>
-                setTxForm({ ...txForm, category: e.target.value })
-              }
-              placeholder="التصنيف (مرتب/إيجار…)"
-              className={inputCls}
-            />
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-50"
-            >
-              تسجيل
-            </button>
-            <input
-              value={txForm.description}
-              onChange={(e) =>
-                setTxForm({ ...txForm, description: e.target.value })
-              }
-              placeholder="وصف (اختياري)"
-              className={`${inputCls} md:col-span-6`}
-            />
-          </form>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="rounded-2xl border border-red-900/50 bg-red-950/20 p-4">
+              <p className="text-xs text-red-300/80">🔻 عليك (مفتوح)</p>
+              <p className="num mt-1 text-lg font-bold text-red-300">
+                {fmtNum(onMeEGP)} EGP
+              </p>
+              <p className="num text-sm text-red-300/70">
+                + {fmtNum(onMeAED)} AED
+              </p>
+            </div>
+            <div className="rounded-2xl border border-emerald-900/50 bg-emerald-950/20 p-4">
+              <p className="text-xs text-emerald-300/80">🔺 ليك عند الناس</p>
+              <p className="num mt-1 text-lg font-bold text-emerald-300">
+                {fmtNum(toMeEGP)} EGP
+              </p>
+              <p className="num text-sm text-emerald-300/70">
+                + {fmtNum(toMeAED)} AED
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+              <p className="text-xs text-zinc-400">صافي الديون (بالدرهم)</p>
+              <p
+                className={`num mt-1 text-lg font-bold ${netAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+              >
+                {fmtNum(netAED)} AED
+              </p>
+              <p className="text-xs text-zinc-600">اللي ليك ناقص اللي عليك</p>
+            </div>
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+              <p className="text-xs text-zinc-400">باقي الشهر ده (بالدرهم)</p>
+              <p
+                className={`num mt-1 text-lg font-bold ${leftoverUnified >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+              >
+                {fmtNum(leftoverUnified)} AED
+              </p>
+              <p className="text-xs text-zinc-600">
+                بعد المصاريف وسداد الديون
+              </p>
+            </div>
+          </div>
 
-          <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900">
-            <table className="w-full min-w-[600px] text-sm">
-              <thead>
-                <tr className="border-b border-zinc-800 text-right text-xs text-zinc-500">
-                  <th className="p-3">التاريخ</th>
-                  <th className="p-3">النوع</th>
-                  <th className="p-3">المبلغ</th>
-                  <th className="p-3">التصنيف</th>
-                  <th className="p-3">الوصف</th>
-                  <th className="p-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="p-8 text-center text-zinc-600">
-                      لسه مفيش حركات مسجلة
-                    </td>
-                  </tr>
-                )}
-                {transactions.map((t) => (
-                  <tr
-                    key={t.id}
-                    className="border-b border-zinc-800/60 last:border-0"
-                  >
-                    <td className="num p-3">{t.date}</td>
-                    <td className="p-3">
-                      <span
-                        className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                          t.type === 'income'
-                            ? 'bg-emerald-950 text-emerald-300'
-                            : 'bg-red-950 text-red-300'
-                        }`}
-                      >
-                        {t.type === 'income' ? '🔺 دخل' : '🔻 مصروف'}
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+              <h2 className="mb-3 text-sm font-bold text-red-300">
+                🔻 أكبر الديون عليك
+              </h2>
+              <ul className="space-y-2">
+                {openDebts
+                  .filter((d) => d.direction === 'on_me')
+                  .sort((a, b) => remaining(b) - remaining(a))
+                  .slice(0, 5)
+                  .map((d) => (
+                    <li
+                      key={d.id}
+                      className="flex items-center justify-between text-sm"
+                    >
+                      <span className="text-zinc-300">
+                        {personById.get(d.person_id)?.name}
                       </span>
-                    </td>
-                    <td
-                      className={`num p-3 font-bold ${
+                      <span className="num font-bold text-red-300">
+                        {fmtMoney(remaining(d), d.currency)}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+              <h2 className="mb-3 text-sm font-bold text-emerald-300">
+                🔺 أكبر المستحقات ليك
+              </h2>
+              <ul className="space-y-2">
+                {openDebts
+                  .filter((d) => d.direction === 'to_me')
+                  .sort((a, b) => remaining(b) - remaining(a))
+                  .slice(0, 5)
+                  .map((d) => (
+                    <li
+                      key={d.id}
+                      className="flex items-center justify-between text-sm"
+                    >
+                      <span className="text-zinc-300">
+                        {personById.get(d.person_id)?.name} — {d.title}
+                      </span>
+                      <span className="num font-bold text-emerald-300">
+                        {fmtMoney(remaining(d), d.currency)}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============ كل الحركات ============ */}
+      {tab === 'HISTORY' && (
+        <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900">
+          <table className="w-full min-w-[600px] text-sm">
+            <thead>
+              <tr className="border-b border-zinc-800 text-right text-xs text-zinc-500">
+                <th className="p-3">التاريخ</th>
+                <th className="p-3">النوع</th>
+                <th className="p-3">المبلغ</th>
+                <th className="p-3">التصنيف</th>
+                <th className="p-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {transactions.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="p-8 text-center text-zinc-600">
+                    لسه مفيش حركات مسجلة
+                  </td>
+                </tr>
+              )}
+              {transactions.map((t) => (
+                <tr
+                  key={t.id}
+                  className="border-b border-zinc-800/60 last:border-0"
+                >
+                  <td className="num p-3">{t.date}</td>
+                  <td className="p-3">
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${
                         t.type === 'income'
-                          ? 'text-emerald-300'
-                          : 'text-red-300'
+                          ? 'bg-emerald-950 text-emerald-300'
+                          : 'bg-red-950 text-red-300'
                       }`}
                     >
-                      {fmtMoney(Number(t.amount), t.currency)}
-                    </td>
-                    <td className="p-3 text-zinc-400">{t.category || '—'}</td>
-                    <td className="p-3 text-zinc-400">
-                      {t.description || '—'}
-                    </td>
-                    <td className="p-3">
-                      <button
-                        onClick={() => deleteTransaction(t.id)}
-                        className="text-zinc-600 hover:text-red-400"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      {t.type === 'income' ? '🔺 دخل' : '🔻 مصروف'}
+                    </span>
+                  </td>
+                  <td
+                    className={`num p-3 font-bold ${
+                      t.type === 'income' ? 'text-emerald-300' : 'text-red-300'
+                    }`}
+                  >
+                    {fmtMoney(Number(t.amount), t.currency)}
+                  </td>
+                  <td className="p-3 text-zinc-400">
+                    {t.category || t.description || '—'}
+                  </td>
+                  <td className="p-3">
+                    <button
+                      onClick={() => editTx(t)}
+                      className="ml-2 text-zinc-600 hover:text-amber-300"
+                      title="تعديل (هيفتح في خطة الشهر)"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={() => deleteTx(t.id)}
+                      className="text-zinc-600 hover:text-red-400"
+                    >
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
