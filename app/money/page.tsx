@@ -184,18 +184,25 @@ export default function MoneyPage() {
   const leftoverUnified = toAED(leftoverEGP, 'EGP', liveFxRate) + leftoverAED;
 
   // ===== رصيد المحفظة الموحّد بالجنيه (بيتحدث لحظيًا بسعر اليوم) =====
-  // = الرصيد الأساسي اللي حطيته + كل الدخل − كل المصاريف − سداد الديون اللي عليك
+  // = الرصيد الأساسي اللي حطيته + كل الدخل − كل المصاريف − سداد الديون
+  // من تاريخ ما ضبطت رصيدك بس — سدادات وحركات قبل كده (زي المرحّلة من إكسيلك
+  // القديم) حصلت فعليًا زمان وخلصت، مش بتخصم من رصيدك النهاردة
+  const walletSetDate = wallet ? wallet.updated_at.slice(0, 10) : todayISO();
   const toEGP = (amount: number, currency: string) =>
     currency === 'AED' ? amount * liveFxRate : amount;
 
   const allIncomeEGP = transactions
-    .filter((t) => t.type === 'income')
+    .filter((t) => t.type === 'income' && t.date >= walletSetDate)
     .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
   const allExpenseEGP = transactions
-    .filter((t) => t.type === 'expense')
+    .filter((t) => t.type === 'expense' && t.date >= walletSetDate)
     .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
   const allDebtPaidOnMeEGP = payments
-    .filter((p) => debtById.get(p.debt_id)?.direction === 'on_me')
+    .filter(
+      (p) =>
+        p.date >= walletSetDate &&
+        debtById.get(p.debt_id)?.direction === 'on_me'
+    )
     .reduce((s, p) => {
       const d = debtById.get(p.debt_id);
       return s + toEGP(Number(p.amount), d?.currency || 'EGP');
@@ -638,6 +645,10 @@ export default function MoneyPage() {
             <p className="num mt-0.5 text-xs text-zinc-500">
               ≈ {fmtNum(currentBalanceAED)} AED — سعر اليوم:{' '}
               {fmtNum(liveFxRate, 2)} EGP لكل 1 AED (بيتحدث لوحده)
+            </p>
+            <p className="num mt-1 text-[11px] text-zinc-600">
+              محسوب من تاريخ {walletSetDate} — الحركات والسدادات القديمة قبل
+              كده متحسبتش
             </p>
           </div>
           <button
