@@ -627,39 +627,39 @@ export default function MoneyPage() {
         {list.length === 0 ? (
           <p className="text-xs text-zinc-600">لسه مسجلتش حاجة في الدورة دي</p>
         ) : (
-          <ul className="divide-y divide-zinc-800/50">
+          <ul className="space-y-2">
             {list.map((t) => (
               <li
                 key={t.id}
-                className="flex items-center justify-between gap-2 py-2 text-sm"
+                className="rounded-xl bg-zinc-950/60 p-3"
               >
-                <span className="text-zinc-300">
-                  {t.category || (isIncome ? 'دخل' : 'مصروف')}
-                  <span className="num mr-2 text-xs text-zinc-600">
-                    {t.date.slice(5)}
-                  </span>
-                </span>
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`num font-bold ${isIncome ? 'text-emerald-300' : 'text-red-300'}`}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-200">
+                      {t.category || (isIncome ? 'دخل' : 'مصروف')}
+                    </p>
+                    <p className="num text-xs text-zinc-600">{t.date}</p>
+                  </div>
+                  <p
+                    className={`num text-2xl font-black ${isIncome ? 'text-emerald-300' : 'text-red-300'}`}
                   >
                     {fmtMoney(Number(t.amount), t.currency)}
-                  </span>
+                  </p>
+                </div>
+                <div className="mt-2 flex gap-2">
                   <button
                     onClick={() => editTx(t)}
-                    className="text-zinc-600 hover:text-amber-300"
-                    title="تعديل"
+                    className="flex-1 rounded-lg border border-zinc-700 py-1.5 text-xs font-bold text-zinc-300 hover:border-amber-500 hover:text-amber-300"
                   >
-                    ✏️
+                    ✏️ تعديل
                   </button>
                   <button
                     onClick={() => deleteTx(t.id)}
-                    className="text-zinc-600 hover:text-red-400"
-                    title="مسح"
+                    className="flex-1 rounded-lg border border-zinc-800 py-1.5 text-xs font-bold text-zinc-500 hover:border-red-600 hover:text-red-400"
                   >
-                    ✕
+                    🗑 حذف
                   </button>
-                </span>
+                </div>
               </li>
             ))}
           </ul>
