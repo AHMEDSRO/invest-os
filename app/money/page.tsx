@@ -1,18 +1,20 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { fmtMoney, fmtNum, todayISO } from '@/lib/format';
 import { getSupabase } from '@/lib/supabase/client';
 import type {
   Currency,
   DebtDirection,
   DebtRow,
+  MoneyCycle,
   Transaction,
 } from '@/lib/types';
 import { useFinanceData } from '@/lib/useFinanceData';
 import { useLiveFx } from '@/lib/useLiveFx';
 
-type Tab = 'MONTH' | 'DEBTS' | 'OVERVIEW' | 'HISTORY';
+type Tab = 'CYCLE' | 'DEBTS' | 'OVERVIEW' | 'HISTORY';
 type DebtFilter = 'ALL' | 'ON_ME' | 'TO_ME' | 'SETTLED';
 type TxType = 'income' | 'expense';
 
@@ -38,12 +40,13 @@ const emptyTxForm = (): TxFormState => ({
 });
 
 export default function MoneyPage() {
+  const router = useRouter();
   const {
     people,
     debts,
     payments,
     transactions,
-    wallet,
+    cycles,
     fxRate,
     loading,
     error,
@@ -52,8 +55,10 @@ export default function MoneyPage() {
 
   // سعر AED/EGP حي — بيتحدث لوحده باستمرار، وبيرجع لآخر سعر مخزّن لو الإنترنت فصل
   const liveFxRate = useLiveFx(fxRate);
+  const toEGP = (amount: number, currency: string) =>
+    currency === 'AED' ? amount * liveFxRate : amount;
 
-  const [tab, setTab] = useState<Tab>('MONTH');
+  const [tab, setTab] = useState<Tab>('CYCLE');
   const [filter, setFilter] = useState<DebtFilter>('ALL');
   const [search, setSearch] = useState('');
   const [expandedDebt, setExpandedDebt] = useState<string | null>(null);
@@ -65,16 +70,17 @@ export default function MoneyPage() {
     expense: emptyTxForm(),
   });
 
-  // سداد من خطة الشهر: اختيار دين + مبلغ
+  // بدء دورة جديدة
+  const [newCycleForm, setNewCycleForm] = useState({
+    amount: '',
+    currency: 'EGP' as Currency,
+    note: '',
+  });
+
+  // سداد من الدورة الحالية: اختيار دين + مبلغ
+  const [showPayInCycle, setShowPayInCycle] = useState(false);
   const [payTarget, setPayTarget] = useState<string>('');
   const [payTargetAmount, setPayTargetAmount] = useState<string>('');
-
-  // ضبط رصيد المحفظة
-  const [showWalletForm, setShowWalletForm] = useState(false);
-  const [walletForm, setWalletForm] = useState({
-    amount: '',
-    currency: 'AED' as Currency,
-  });
 
   // إضافة/تعديل دين
   const [showAddDebt, setShowAddDebt] = useState(false);
@@ -152,88 +158,97 @@ export default function MoneyPage() {
     toMeAED -
     (toAED(onMeEGP, 'EGP', liveFxRate) + onMeAED);
 
-  // ===== حسابات الشهر الحالي =====
-  const monthKey = todayISO().slice(0, 7);
-  const monthTx = transactions.filter((t) => t.date.startsWith(monthKey));
-  const sumTx = (type: TxType, currency: Currency) =>
-    monthTx
+  // ===== الدورة =====
+  const openCycle = cycles.find((c) => c.status === 'open') || null;
+  const closedCycles = cycles.filter((c) => c.status === 'closed');
+
+  function cycleRemainingEGP(cycle: MoneyCycle): number {
+    const tx = transactions.filter((t) => t.cycle_id === cycle.id);
+    const income = tx
+      .filter((t) => t.type === 'income')
+      .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
+    const expense = tx
+      .filter((t) => t.type === 'expense')
+      .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
+    const paidOnMe = payments
+      .filter(
+        (p) =>
+          p.cycle_id === cycle.id &&
+          debtById.get(p.debt_id)?.direction === 'on_me'
+      )
+      .reduce((s, p) => {
+        const d = debtById.get(p.debt_id);
+        return s + toEGP(Number(p.amount), d?.currency || 'EGP');
+      }, 0);
+    const opening = toEGP(Number(cycle.opening_amount), cycle.opening_currency);
+    return opening + income - expense - paidOnMe;
+  }
+
+  const cycleTx = openCycle
+    ? transactions.filter((t) => t.cycle_id === openCycle.id)
+    : [];
+  const sumCycleTx = (type: TxType, currency: Currency) =>
+    cycleTx
       .filter((t) => t.type === type && t.currency === currency)
       .reduce((s, t) => s + Number(t.amount), 0);
-  const incomeEGP = sumTx('income', 'EGP');
-  const incomeAED = sumTx('income', 'AED');
-  const expenseEGP = sumTx('expense', 'EGP');
-  const expenseAED = sumTx('expense', 'AED');
+  const incomeEGP = sumCycleTx('income', 'EGP');
+  const incomeAED = sumCycleTx('income', 'AED');
+  const expenseEGP = sumCycleTx('expense', 'EGP');
+  const expenseAED = sumCycleTx('expense', 'AED');
 
-  // سداد ديون (اللي عليك) المسجل الشهر ده — بيتخصم من المتبقي
-  const monthDebtPaid = (currency: Currency) =>
-    payments
-      .filter((p) => {
-        const d = debtById.get(p.debt_id);
-        return (
-          p.date.startsWith(monthKey) &&
-          d?.direction === 'on_me' &&
-          d?.currency === currency
-        );
-      })
-      .reduce((s, p) => s + Number(p.amount), 0);
-  const debtPaidEGP = monthDebtPaid('EGP');
-  const debtPaidAED = monthDebtPaid('AED');
+  const cyclePayments = openCycle
+    ? payments.filter(
+        (p) =>
+          p.cycle_id === openCycle.id &&
+          debtById.get(p.debt_id)?.direction === 'on_me'
+      )
+    : [];
+  const debtPaidEGP = cyclePayments
+    .filter((p) => debtById.get(p.debt_id)?.currency === 'EGP')
+    .reduce((s, p) => s + Number(p.amount), 0);
+  const debtPaidAED = cyclePayments
+    .filter((p) => debtById.get(p.debt_id)?.currency === 'AED')
+    .reduce((s, p) => s + Number(p.amount), 0);
 
-  const leftoverEGP = incomeEGP - expenseEGP - debtPaidEGP;
-  const leftoverAED = incomeAED - expenseAED - debtPaidAED;
-  const leftoverUnified = toAED(leftoverEGP, 'EGP', liveFxRate) + leftoverAED;
-
-  // ===== رصيد المحفظة الموحّد بالجنيه (بيتحدث لحظيًا بسعر اليوم) =====
-  // = الرصيد الأساسي اللي حطيته + كل الدخل − كل المصاريف − سداد الديون
-  // من تاريخ ما ضبطت رصيدك بس — سدادات وحركات قبل كده (زي المرحّلة من إكسيلك
-  // القديم) حصلت فعليًا زمان وخلصت، مش بتخصم من رصيدك النهاردة
-  const walletSetDate = wallet ? wallet.updated_at.slice(0, 10) : todayISO();
-  const toEGP = (amount: number, currency: string) =>
-    currency === 'AED' ? amount * liveFxRate : amount;
-
-  const allIncomeEGP = transactions
-    .filter((t) => t.type === 'income' && t.date >= walletSetDate)
-    .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
-  const allExpenseEGP = transactions
-    .filter((t) => t.type === 'expense' && t.date >= walletSetDate)
-    .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
-  const allDebtPaidOnMeEGP = payments
-    .filter(
-      (p) =>
-        p.date >= walletSetDate &&
-        debtById.get(p.debt_id)?.direction === 'on_me'
-    )
-    .reduce((s, p) => {
-      const d = debtById.get(p.debt_id);
-      return s + toEGP(Number(p.amount), d?.currency || 'EGP');
-    }, 0);
-
-  const walletBaselineEGP = wallet
-    ? toEGP(Number(wallet.balance), wallet.currency)
-    : 0;
-  const currentBalanceEGP =
-    walletBaselineEGP + allIncomeEGP - allExpenseEGP - allDebtPaidOnMeEGP;
-  const currentBalanceAED = currentBalanceEGP / liveFxRate;
+  const remainingEGP = openCycle ? cycleRemainingEGP(openCycle) : 0;
+  const remainingAED = remainingEGP / liveFxRate;
 
   // ===== أفعال =====
 
-  async function saveWallet(e: React.FormEvent) {
+  async function startCycle(e: React.FormEvent) {
     e.preventDefault();
-    const amount = parseFloat(walletForm.amount);
+    const amount = parseFloat(newCycleForm.amount);
     if (!amount || amount <= 0) return;
     setSaving(true);
-    await getSupabase()
-      .from('wallet')
-      .update({
-        balance: amount,
-        currency: walletForm.currency,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', 1);
+    await getSupabase().from('money_cycles').insert({
+      opening_amount: amount,
+      opening_currency: newCycleForm.currency,
+      note: newCycleForm.note || null,
+    });
     setSaving(false);
-    setShowWalletForm(false);
-    setWalletForm({ amount: '', currency: 'AED' });
+    setNewCycleForm({ amount: '', currency: 'EGP', note: '' });
     reload();
+  }
+
+  async function closeCycle() {
+    if (!openCycle) return;
+    if (
+      !window.confirm(
+        'متأكد إنك عايز تقفل الدورة الحالية؟ هتتحفظ في السجل، وتقدر تبدأ دورة جديدة على طول بعدها.'
+      )
+    )
+      return;
+    await getSupabase()
+      .from('money_cycles')
+      .update({ status: 'closed', closed_at: new Date().toISOString() })
+      .eq('id', openCycle.id);
+    reload();
+  }
+
+  function investRemaining() {
+    const amount = Math.round(Math.abs(remainingEGP));
+    if (amount <= 0) return;
+    router.push(`/?invest=${amount}&currency=EGP`);
   }
 
   async function saveTx(type: TxType) {
@@ -242,18 +257,26 @@ export default function MoneyPage() {
     if (!amount || amount <= 0) return;
     setSaving(true);
     const supabase = getSupabase();
-    const payload = {
-      date: f.date,
-      type,
-      category: f.category || null,
-      description: null,
-      amount,
-      currency: f.currency,
-    };
     if (f.id) {
-      await supabase.from('transactions').update(payload).eq('id', f.id);
+      await supabase
+        .from('transactions')
+        .update({
+          date: f.date,
+          category: f.category || null,
+          amount,
+          currency: f.currency,
+        })
+        .eq('id', f.id);
     } else {
-      await supabase.from('transactions').insert(payload);
+      await supabase.from('transactions').insert({
+        date: f.date,
+        type,
+        category: f.category || null,
+        description: null,
+        amount,
+        currency: f.currency,
+        cycle_id: openCycle?.id ?? null,
+      });
     }
     setSaving(false);
     setTxForms((prev) => ({ ...prev, [type]: emptyTxForm() }));
@@ -271,7 +294,7 @@ export default function MoneyPage() {
         category: t.category || '',
       },
     }));
-    if (tab === 'HISTORY') setTab('MONTH');
+    if (tab === 'HISTORY') setTab('CYCLE');
   }
 
   async function deleteTx(id: string) {
@@ -290,6 +313,7 @@ export default function MoneyPage() {
       date: todayISO(),
       amount,
       method: method || null,
+      cycle_id: openCycle?.id ?? null,
     });
     if ((paidByDebt.get(debt.id) || 0) + amount >= Number(debt.principal)) {
       await supabase
@@ -313,6 +337,7 @@ export default function MoneyPage() {
       date: payForm.date,
       amount,
       method: payForm.method || null,
+      cycle_id: openCycle?.id ?? null,
     });
     if ((paidByDebt.get(debt.id) || 0) + amount >= Number(debt.principal)) {
       await supabase
@@ -438,7 +463,7 @@ export default function MoneyPage() {
   // ===== مكوّن عمود دخل/مصروف — يُستخدم جنب بعض في نفس السكشن =====
   function txColumn(type: TxType) {
     const f = txForms[type];
-    const list = monthTx
+    const list = cycleTx
       .filter((t) => t.type === type)
       .sort((a, b) => b.date.localeCompare(a.date));
     const isIncome = type === 'income';
@@ -538,9 +563,9 @@ export default function MoneyPage() {
           )}
         </div>
 
-        {/* قائمة الشهر */}
+        {/* قائمة الدورة */}
         {list.length === 0 ? (
-          <p className="text-xs text-zinc-600">لسه مسجلتش حاجة الشهر ده</p>
+          <p className="text-xs text-zinc-600">لسه مسجلتش حاجة في الدورة دي</p>
         ) : (
           <ul className="divide-y divide-zinc-800/50">
             {list.map((t) => (
@@ -615,6 +640,7 @@ export default function MoneyPage() {
   async function paySelectedDebt() {
     if (!selectedDebt) return;
     await payDebt(selectedDebt, payTargetAmount);
+    setShowPayInCycle(false);
   }
 
   const filterChips: [DebtFilter, string][] = [
@@ -628,90 +654,10 @@ export default function MoneyPage() {
     <div className="space-y-5">
       <h1 className="text-xl font-bold">الفلوس</h1>
 
-      {/* رصيدك الحالي — موحّد بالجنيه، بيتحدث لحظيًا بسعر اليوم */}
-      <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/30 p-4 md:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs text-amber-300/80">
-              رصيدك الحالي (محوّل للجنيه تلقائيًا)
-            </p>
-            <p
-              className={`num mt-1 text-3xl font-black ${
-                currentBalanceEGP >= 0 ? 'text-amber-300' : 'text-red-400'
-              }`}
-            >
-              {fmtNum(currentBalanceEGP)} EGP
-            </p>
-            <p className="num mt-0.5 text-xs text-zinc-500">
-              ≈ {fmtNum(currentBalanceAED)} AED — سعر اليوم:{' '}
-              {fmtNum(liveFxRate, 2)} EGP لكل 1 AED (بيتحدث لوحده)
-            </p>
-            <p className="num mt-1 text-[11px] text-zinc-600">
-              محسوب من تاريخ {walletSetDate} — الحركات والسدادات القديمة قبل
-              كده متحسبتش
-            </p>
-          </div>
-          <button
-            onClick={() => setShowWalletForm(!showWalletForm)}
-            className="rounded-lg border border-amber-600/50 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-amber-500 hover:text-zinc-950"
-          >
-            {showWalletForm ? 'إغلاق' : '✏️ اضبط رصيدك'}
-          </button>
-        </div>
-
-        {showWalletForm && (
-          <form
-            onSubmit={saveWallet}
-            className="mt-4 flex flex-wrap items-end gap-2 border-t border-zinc-800 pt-4"
-          >
-            <div>
-              <label className="mb-1 block text-xs text-zinc-400">
-                معايا كام دلوقتي (يستبدل الرصيد الحالي)
-              </label>
-              <input
-                type="number"
-                step="any"
-                dir="ltr"
-                value={walletForm.amount}
-                onChange={(e) =>
-                  setWalletForm({ ...walletForm, amount: e.target.value })
-                }
-                placeholder="مثلًا 9000"
-                className={`${inputCls} w-32`}
-              />
-            </div>
-            <select
-              value={walletForm.currency}
-              onChange={(e) =>
-                setWalletForm({
-                  ...walletForm,
-                  currency: e.target.value as Currency,
-                })
-              }
-              className={inputCls}
-            >
-              <option value="AED">درهم AED</option>
-              <option value="EGP">جنيه EGP</option>
-            </select>
-            <button
-              type="submit"
-              disabled={saving || !parseFloat(walletForm.amount)}
-              className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-50"
-            >
-              احفظ رصيدي
-            </button>
-            <p className="basis-full text-xs leading-5 text-zinc-500">
-              بعد الحفظ، رصيدك هيزيد مع أي دخل تسجله وينقص مع أي مصروف أو سداد
-              دين تسجله — تلقائيًا.
-            </p>
-          </form>
-        )}
-      </div>
-
       <div className="flex gap-1.5 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900 p-1.5 md:gap-2">
         {(
           [
-            ['MONTH', '📅 خطة الشهر'],
+            ['CYCLE', '💵 الدورة الحالية'],
             ['DEBTS', '🤝 الديون'],
             ['OVERVIEW', '📊 نظرة عامة'],
             ['HISTORY', '🗂 كل الحركات'],
@@ -731,130 +677,223 @@ export default function MoneyPage() {
         ))}
       </div>
 
-      {/* ============ خطة الشهر ============ */}
-      {tab === 'MONTH' && (
+      {/* ============ الدورة الحالية ============ */}
+      {tab === 'CYCLE' && (
         <div className="space-y-4">
-          {/* ١) الدخل والمصاريف جنب بعض — والباقي في آخر السكشن */}
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 md:p-5">
-            <h2 className="mb-3 text-sm font-bold text-zinc-200">
-              ١) دخلك ومصاريفك الشهر ده
-            </h2>
-            <div className="grid gap-3 md:grid-cols-2">
-              {txColumn('income')}
-              {txColumn('expense')}
-            </div>
-
-            {/* الباقي بعد الطرح — نهاية السكشن */}
-            <div className="mt-4 rounded-xl border border-amber-600/40 bg-gradient-to-l from-zinc-950 to-amber-950/20 p-3 md:p-4">
-              <p className="mb-2 text-xs font-bold text-amber-300">
-                الباقي معاك بعد المصاريف (دخل − مصاريف − سداد الشهر)
+          {!openCycle ? (
+            /* مفيش دورة مفتوحة — ابدأ واحدة جديدة */
+            <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 to-amber-950/20 p-4 md:p-5">
+              <h2 className="mb-1 text-sm font-bold text-amber-300">
+                معايا كام دلوقتي؟
+              </h2>
+              <p className="mb-4 text-xs text-zinc-500">
+                ده بداية دورة كاش جديدة — سجّل فيها دخلك ومصاريفك وسداداتك،
+                واقفلها وقت ما تحب
               </p>
-              <div className="grid grid-cols-2 gap-2 text-center">
-                <div className="rounded-xl bg-zinc-950/70 p-3">
-                  <p className="text-[11px] text-zinc-500">بالجنيه</p>
-                  <p
-                    className={`num text-lg font-black ${leftoverEGP >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
-                  >
-                    {fmtNum(leftoverEGP)} EGP
-                  </p>
+              <form
+                onSubmit={startCycle}
+                className="flex flex-wrap items-end gap-2"
+              >
+                <div>
+                  <label className="mb-1 block text-xs text-zinc-400">
+                    المبلغ
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    dir="ltr"
+                    value={newCycleForm.amount}
+                    onChange={(e) =>
+                      setNewCycleForm({
+                        ...newCycleForm,
+                        amount: e.target.value,
+                      })
+                    }
+                    placeholder="مثلًا 9000"
+                    className={`${inputCls} w-32`}
+                  />
                 </div>
-                <div className="rounded-xl bg-zinc-950/70 p-3">
-                  <p className="text-[11px] text-zinc-500">بالدرهم</p>
-                  <p
-                    className={`num text-lg font-black ${leftoverAED >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
-                  >
-                    {fmtNum(leftoverAED)} AED
-                  </p>
-                </div>
-              </div>
-              {(debtPaidEGP > 0 || debtPaidAED > 0) && (
-                <p className="num mt-2 text-xs text-zinc-500">
-                  (اتخصم منه سداد ديون الشهر ده: {fmtNum(debtPaidEGP)} EGP +{' '}
-                  {fmtNum(debtPaidAED)} AED)
-                </p>
-              )}
+                <select
+                  value={newCycleForm.currency}
+                  onChange={(e) =>
+                    setNewCycleForm({
+                      ...newCycleForm,
+                      currency: e.target.value as Currency,
+                    })
+                  }
+                  className={inputCls}
+                >
+                  <option value="EGP">جنيه EGP</option>
+                  <option value="AED">درهم AED</option>
+                </select>
+                <input
+                  value={newCycleForm.note}
+                  onChange={(e) =>
+                    setNewCycleForm({
+                      ...newCycleForm,
+                      note: e.target.value,
+                    })
+                  }
+                  placeholder="ملاحظة (اختياري)"
+                  className={`${inputCls} flex-1 basis-32`}
+                />
+                <button
+                  type="submit"
+                  disabled={saving || !parseFloat(newCycleForm.amount)}
+                  className="rounded-lg bg-amber-500 px-5 py-2 text-sm font-bold text-zinc-950 disabled:opacity-50"
+                >
+                  ابدأ الدورة
+                </button>
+              </form>
             </div>
-          </div>
-
-          {/* ٢) هتسدد مين من الباقي — اختيار من قائمة */}
-          <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 to-amber-950/20 p-4 md:p-5">
-            <h2 className="mb-3 text-sm font-bold text-amber-300">
-              ٢) هتسدد مين من الباقي؟
-            </h2>
-
-            {onMeOpenDebts.length === 0 ? (
-              <p className="text-sm text-emerald-400">
-                مفيش ديون مفتوحة عليك 🎉
-              </p>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-end gap-2">
-                  <div className="min-w-[220px] flex-1">
-                    <label className="mb-1 block text-xs text-zinc-400">
-                      اختار الشخص
-                    </label>
-                    <select
-                      value={payTarget}
-                      onChange={(e) => {
-                        setPayTarget(e.target.value);
-                        setPayTargetAmount('');
-                      }}
-                      className={`${inputCls} w-full`}
-                    >
-                      <option value="">— اختار من ديونك المفتوحة —</option>
-                      {onMeOpenDebts.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {personById.get(d.person_id)?.name} — باقي{' '}
-                          {fmtNum(remaining(d))} {d.currency}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {selectedDebt && (
-                    <>
-                      <div>
-                        <label className="mb-1 block text-xs text-zinc-400">
-                          هتسدد كام
-                        </label>
-                        <input
-                          type="number"
-                          step="any"
-                          dir="ltr"
-                          value={payTargetAmount}
-                          onChange={(e) => setPayTargetAmount(e.target.value)}
-                          placeholder={`${selectedDebt.currency}`}
-                          className={`${inputCls} w-28`}
-                        />
-                      </div>
-                      <button
-                        onClick={paySelectedDebt}
-                        disabled={saving || !parseFloat(payTargetAmount)}
-                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500 disabled:opacity-30"
-                      >
-                        سدّد ✓
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {selectedDebt && (
-                  <p className="num mt-3 text-sm text-zinc-300">
-                    باقي على «{personById.get(selectedDebt.person_id)?.name}»
-                    :{' '}
-                    <span className="font-bold text-red-300">
-                      {fmtMoney(remaining(selectedDebt), selectedDebt.currency)}
+          ) : (
+            <>
+              {/* رأس الدورة */}
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+                <div>
+                  <p className="text-sm font-bold text-zinc-200">
+                    الدورة الحالية — بدأت بـ{' '}
+                    <span className="num text-amber-300">
+                      {fmtNum(Number(openCycle.opening_amount))}{' '}
+                      {openCycle.opening_currency}
+                    </span>{' '}
+                    يوم{' '}
+                    <span className="num">
+                      {openCycle.started_at.slice(0, 10)}
                     </span>
                   </p>
-                )}
-              </>
-            )}
+                  {openCycle.note && (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      📝 {openCycle.note}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={closeCycle}
+                  className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-bold text-zinc-300 hover:border-red-600 hover:text-red-400"
+                >
+                  🔒 اقفل الدورة
+                </button>
+              </div>
 
-            <p className="mt-4 rounded-xl bg-zinc-950/70 px-3 py-2.5 text-xs leading-6 text-zinc-400">
-              💡 اللي يفضل معاك بعد المصاريف والسداد هو اللي تستثمره — روح
-              للداشبورد واكتبه في كارت «أستثمره فين؟»
-            </p>
-          </div>
+              {/* الدخل والمصاريف جنب بعض */}
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 md:p-5">
+                <h2 className="mb-3 text-sm font-bold text-zinc-200">
+                  دخلك ومصاريفك في الدورة دي
+                </h2>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {txColumn('income')}
+                  {txColumn('expense')}
+                </div>
+              </div>
+
+              {/* المتبقي — رقم واحد موحّد + أفعال */}
+              <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/30 p-4 md:p-5">
+                <p className="text-xs text-amber-300/80">المتبقي معاك</p>
+                <p
+                  className={`num mt-1 text-4xl font-black ${
+                    remainingEGP >= 0 ? 'text-amber-300' : 'text-red-400'
+                  }`}
+                >
+                  {fmtNum(remainingEGP)} EGP
+                </p>
+                <p className="num mt-0.5 text-xs text-zinc-500">
+                  ≈ {fmtNum(remainingAED)} AED — سعر اليوم:{' '}
+                  {fmtNum(liveFxRate, 2)} EGP لكل 1 AED
+                </p>
+                {(debtPaidEGP > 0 || debtPaidAED > 0) && (
+                  <p className="num mt-1 text-xs text-zinc-600">
+                    (اتخصم منه سداد ديون في الدورة دي: {fmtNum(debtPaidEGP)}{' '}
+                    EGP + {fmtNum(debtPaidAED)} AED)
+                  </p>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setShowPayInCycle(!showPayInCycle)}
+                    disabled={onMeOpenDebts.length === 0}
+                    className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-bold text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                  >
+                    🤝 سدّد دين من الباقي
+                  </button>
+                  <button
+                    onClick={investRemaining}
+                    disabled={remainingEGP <= 0}
+                    className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 hover:bg-amber-400 disabled:opacity-40"
+                  >
+                    📈 استثمر الباقي
+                  </button>
+                </div>
+
+                {showPayInCycle && (
+                  <div className="mt-4 rounded-xl bg-zinc-950/70 p-3">
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="min-w-[220px] flex-1">
+                        <label className="mb-1 block text-xs text-zinc-400">
+                          اختار الشخص
+                        </label>
+                        <select
+                          value={payTarget}
+                          onChange={(e) => {
+                            setPayTarget(e.target.value);
+                            setPayTargetAmount('');
+                          }}
+                          className={`${inputCls} w-full`}
+                        >
+                          <option value="">— اختار من ديونك المفتوحة —</option>
+                          {onMeOpenDebts.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {personById.get(d.person_id)?.name} — باقي{' '}
+                              {fmtNum(remaining(d))} {d.currency}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedDebt && (
+                        <>
+                          <div>
+                            <label className="mb-1 block text-xs text-zinc-400">
+                              هتسدد كام
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              dir="ltr"
+                              value={payTargetAmount}
+                              onChange={(e) =>
+                                setPayTargetAmount(e.target.value)
+                              }
+                              placeholder={selectedDebt.currency}
+                              className={`${inputCls} w-28`}
+                            />
+                          </div>
+                          <button
+                            onClick={paySelectedDebt}
+                            disabled={saving || !parseFloat(payTargetAmount)}
+                            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500 disabled:opacity-30"
+                          >
+                            سدّد ✓
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {selectedDebt && (
+                      <p className="num mt-2 text-xs text-zinc-400">
+                        باقي على «
+                        {personById.get(selectedDebt.person_id)?.name}»:{' '}
+                        <span className="font-bold text-red-300">
+                          {fmtMoney(
+                            remaining(selectedDebt),
+                            selectedDebt.currency
+                          )}
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1390,14 +1429,17 @@ export default function MoneyPage() {
               <p className="text-xs text-zinc-600">اللي ليك ناقص اللي عليك</p>
             </div>
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-              <p className="text-xs text-zinc-400">باقي الشهر ده (بالدرهم)</p>
+              <p className="text-xs text-zinc-400">المتبقي في دورتك الحالية</p>
               <p
-                className={`num mt-1 text-lg font-bold ${leftoverUnified >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                className={`num mt-1 text-lg font-bold ${
+                  !openCycle
+                    ? 'text-zinc-500'
+                    : remainingEGP >= 0
+                      ? 'text-emerald-300'
+                      : 'text-red-300'
+                }`}
               >
-                {fmtNum(leftoverUnified)} AED
-              </p>
-              <p className="text-xs text-zinc-600">
-                بعد المصاريف وسداد الديون
+                {openCycle ? `${fmtNum(remainingEGP)} EGP` : 'مفيش دورة مفتوحة'}
               </p>
             </div>
           </div>
@@ -1451,6 +1493,45 @@ export default function MoneyPage() {
                   ))}
               </ul>
             </div>
+          </div>
+
+          {/* دورات سابقة */}
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+            <h2 className="mb-3 text-sm font-bold text-zinc-300">
+              🗂 دورات سابقة (مقفولة)
+            </h2>
+            {closedCycles.length === 0 ? (
+              <p className="text-sm text-zinc-600">لسه مفيش دورة اتقفلت</p>
+            ) : (
+              <ul className="space-y-2">
+                {closedCycles.map((c) => {
+                  const rem = cycleRemainingEGP(c);
+                  return (
+                    <li
+                      key={c.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-zinc-950/60 px-3 py-2 text-sm"
+                    >
+                      <span className="text-zinc-300">
+                        بدأت بـ{' '}
+                        <span className="num">
+                          {fmtNum(Number(c.opening_amount))}{' '}
+                          {c.opening_currency}
+                        </span>{' '}
+                        <span className="num text-xs text-zinc-500">
+                          ({c.started_at.slice(0, 10)} →{' '}
+                          {c.closed_at?.slice(0, 10)})
+                        </span>
+                      </span>
+                      <span
+                        className={`num font-bold ${rem >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                      >
+                        اتقفلت على {fmtNum(rem)} EGP
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
         </div>
       )}
@@ -1507,7 +1588,7 @@ export default function MoneyPage() {
                     <button
                       onClick={() => editTx(t)}
                       className="ml-2 text-zinc-600 hover:text-amber-300"
-                      title="تعديل (هيفتح في خطة الشهر)"
+                      title="تعديل (هيفتح في الدورة الحالية)"
                     >
                       ✏️
                     </button>

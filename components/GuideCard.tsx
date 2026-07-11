@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { currentMonth, fmtNum } from '@/lib/format';
 import { getSupabase } from '@/lib/supabase/client';
 
@@ -46,6 +47,21 @@ export default function GuideCard() {
 
   const [brief, setBrief] = useState<string | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
+
+  const cardRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+
+  // لو جاي من صفحة الفلوس بمبلغ جاهز للاستثمار (زرار «استثمر الباقي»)
+  useEffect(() => {
+    const invest = searchParams.get('invest');
+    const cur = searchParams.get('currency');
+    if (invest && parseFloat(invest) > 0) {
+      setAmount(invest);
+      if (cur === 'EGP' || cur === 'AED' || cur === 'USD') setCurrency(cur);
+      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function ask(e: React.FormEvent) {
     e.preventDefault();
@@ -102,7 +118,10 @@ export default function GuideCard() {
   }
 
   return (
-    <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/40 p-5 md:p-6">
+    <div
+      ref={cardRef}
+      className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/40 p-5 md:p-6"
+    >
       <h2 className="text-base font-bold text-amber-300 md:text-lg">
         💰 معايا مبلغ الشهر ده — أستثمره فين؟
       </h2>
