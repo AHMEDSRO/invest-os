@@ -63,6 +63,10 @@ export default function MoneyPage() {
   const [search, setSearch] = useState('');
   const [expandedDebt, setExpandedDebt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // رسالة خطأ عامة — بتتعرض بدل ما أي فورم يتصفّر بصمت لو الحفظ فشل
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [printCycle, setPrintCycle] = useState<MoneyCycle | null>(null);
+  const [cycleFilter, setCycleFilter] = useState<'ALL' | 'POS' | 'NEG'>('ALL');
 
   // فورمات الدخل والمصاريف (لكل نوع فورم مستقل + وضع تعديل)
   const [txForms, setTxForms] = useState<Record<TxType, TxFormState>>({
@@ -220,12 +224,17 @@ export default function MoneyPage() {
     const amount = parseFloat(newCycleForm.amount);
     if (!amount || amount <= 0) return;
     setSaving(true);
-    await getSupabase().from('money_cycles').insert({
+    setActionError(null);
+    const { error } = await getSupabase().from('money_cycles').insert({
       opening_amount: amount,
       opening_currency: newCycleForm.currency,
       note: newCycleForm.note || null,
     });
     setSaving(false);
+    if (error) {
+      setActionError('حصل خطأ وإحنا بنبدأ الدورة — حاول تاني');
+      return;
+    }
     setNewCycleForm({ amount: '', currency: 'EGP', note: '' });
     reload();
   }
@@ -238,10 +247,15 @@ export default function MoneyPage() {
       )
     )
       return;
-    await getSupabase()
+    setActionError(null);
+    const { error } = await getSupabase()
       .from('money_cycles')
       .update({ status: 'closed', closed_at: new Date().toISOString() })
       .eq('id', openCycle.id);
+    if (error) {
+      setActionError('حصل خطأ وإحنا بنقفل الدورة — حاول تاني');
+      return;
+    }
     reload();
   }
 
@@ -251,34 +265,44 @@ export default function MoneyPage() {
     router.push(`/?invest=${amount}&currency=EGP`);
   }
 
+  // يجهّز ملخص PDF للدورة (عن طريق نافذة الطباعة) — تقدر تحفظه PDF من فيها
+  function printCycleSummary(cycle: MoneyCycle) {
+    setPrintCycle(cycle);
+    setTimeout(() => window.print(), 100);
+  }
+
   async function saveTx(type: TxType) {
     const f = txForms[type];
     const amount = parseFloat(f.amount);
     if (!amount || amount <= 0) return;
     setSaving(true);
+    setActionError(null);
     const supabase = getSupabase();
-    if (f.id) {
-      await supabase
-        .from('transactions')
-        .update({
+    const { error } = f.id
+      ? await supabase
+          .from('transactions')
+          .update({
+            date: f.date,
+            category: f.category || null,
+            amount,
+            currency: f.currency,
+          })
+          .eq('id', f.id)
+      : await supabase.from('transactions').insert({
           date: f.date,
+          type,
           category: f.category || null,
+          description: null,
           amount,
           currency: f.currency,
-        })
-        .eq('id', f.id);
-    } else {
-      await supabase.from('transactions').insert({
-        date: f.date,
-        type,
-        category: f.category || null,
-        description: null,
-        amount,
-        currency: f.currency,
-        cycle_id: openCycle?.id ?? null,
-      });
-    }
+          cycle_id: openCycle?.id ?? null,
+        });
     setSaving(false);
+    if (error) {
+      // ما نصفّرش الفورم لو الحفظ فشل — عشان المبلغ متختفيش من غير ما يتسجل
+      setActionError('حصل خطأ في الحفظ — القيمة لسه في الخانة، جرب «أضف» تاني');
+      return;
+    }
     setTxForms((prev) => ({ ...prev, [type]: emptyTxForm() }));
     reload();
   }
@@ -307,14 +331,20 @@ export default function MoneyPage() {
     const amount = parseFloat(amountStr);
     if (!amount || amount <= 0) return;
     setSaving(true);
+    setActionError(null);
     const supabase = getSupabase();
-    await supabase.from('debt_payments').insert({
+    const { error } = await supabase.from('debt_payments').insert({
       debt_id: debt.id,
       date: todayISO(),
       amount,
       method: method || null,
       cycle_id: openCycle?.id ?? null,
     });
+    if (error) {
+      setSaving(false);
+      setActionError('حصل خطأ في تسجيل السداد — جرب تاني');
+      return;
+    }
     if ((paidByDebt.get(debt.id) || 0) + amount >= Number(debt.principal)) {
       await supabase
         .from('debts')
@@ -331,14 +361,20 @@ export default function MoneyPage() {
     const amount = parseFloat(payForm.amount);
     if (!amount || amount <= 0) return;
     setSaving(true);
+    setActionError(null);
     const supabase = getSupabase();
-    await supabase.from('debt_payments').insert({
+    const { error } = await supabase.from('debt_payments').insert({
       debt_id: debt.id,
       date: payForm.date,
       amount,
       method: payForm.method || null,
       cycle_id: openCycle?.id ?? null,
     });
+    if (error) {
+      setSaving(false);
+      setActionError('حصل خطأ في تسجيل السداد — جرب تاني');
+      return;
+    }
     if ((paidByDebt.get(debt.id) || 0) + amount >= Number(debt.principal)) {
       await supabase
         .from('debts')
@@ -488,79 +524,103 @@ export default function MoneyPage() {
           </p>
         </div>
 
-        {/* فورم إضافة/تعديل */}
-        <div className="mb-3 flex flex-wrap gap-2">
-          <input
-            type="number"
-            step="any"
-            dir="ltr"
-            value={f.amount}
-            onChange={(e) =>
-              setTxForms((p) => ({
-                ...p,
-                [type]: { ...f, amount: e.target.value },
-              }))
-            }
-            placeholder="المبلغ"
-            className={`${inputCls} w-24`}
-          />
-          <select
-            value={f.currency}
-            onChange={(e) =>
-              setTxForms((p) => ({
-                ...p,
-                [type]: { ...f, currency: e.target.value as Currency },
-              }))
-            }
-            className={inputCls}
-          >
-            <option value="EGP">جنيه</option>
-            <option value="AED">درهم</option>
-          </select>
-          <input
-            value={f.category}
-            onChange={(e) =>
-              setTxForms((p) => ({
-                ...p,
-                [type]: { ...f, category: e.target.value },
-              }))
-            }
-            placeholder={isIncome ? 'المصدر' : 'البند'}
-            className={`${inputCls} flex-1 basis-24`}
-          />
-          <input
-            type="date"
-            dir="ltr"
-            value={f.date}
-            onChange={(e) =>
-              setTxForms((p) => ({
-                ...p,
-                [type]: { ...f, date: e.target.value },
-              }))
-            }
-            className={`${inputCls} basis-full sm:basis-auto`}
-          />
-          <button
-            onClick={() => saveTx(type)}
-            disabled={saving || !parseFloat(f.amount)}
-            className={`rounded-lg px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-40 ${
-              isIncome
-                ? 'bg-emerald-500 hover:bg-emerald-400'
-                : 'bg-red-400 hover:bg-red-300'
-            }`}
-          >
-            {f.id ? 'حفظ التعديل' : '+ أضف'}
-          </button>
-          {f.id && (
-            <button
-              onClick={() =>
-                setTxForms((p) => ({ ...p, [type]: emptyTxForm() }))
+        {/* فورم إضافة/تعديل — حقل تحت حقل عشان يبقى أسهل في الإدخال */}
+        <div className="mb-3 space-y-2 rounded-lg bg-zinc-950/50 p-2.5">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-[11px] text-zinc-500">
+                المبلغ
+              </label>
+              <input
+                type="number"
+                step="any"
+                dir="ltr"
+                value={f.amount}
+                onChange={(e) =>
+                  setTxForms((p) => ({
+                    ...p,
+                    [type]: { ...f, amount: e.target.value },
+                  }))
+                }
+                placeholder="0"
+                className={`${inputCls} w-full`}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] text-zinc-500">
+                العملة
+              </label>
+              <select
+                value={f.currency}
+                onChange={(e) =>
+                  setTxForms((p) => ({
+                    ...p,
+                    [type]: { ...f, currency: e.target.value as Currency },
+                  }))
+                }
+                className={`${inputCls} w-full`}
+              >
+                <option value="EGP">جنيه</option>
+                <option value="AED">درهم</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] text-zinc-500">
+              {isIncome ? 'المصدر' : 'البند'}
+            </label>
+            <input
+              value={f.category}
+              onChange={(e) =>
+                setTxForms((p) => ({
+                  ...p,
+                  [type]: { ...f, category: e.target.value },
+                }))
               }
-              className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400"
+              placeholder={isIncome ? 'مثلًا: مرتب' : 'مثلًا: إيجار'}
+              className={`${inputCls} w-full`}
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <label className="mb-1 block text-[11px] text-zinc-500">
+                التاريخ
+              </label>
+              <input
+                type="date"
+                dir="ltr"
+                value={f.date}
+                onChange={(e) =>
+                  setTxForms((p) => ({
+                    ...p,
+                    [type]: { ...f, date: e.target.value },
+                  }))
+                }
+                className={`${inputCls} w-full`}
+              />
+            </div>
+            <button
+              onClick={() => saveTx(type)}
+              disabled={saving || !parseFloat(f.amount)}
+              className={`rounded-lg px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-40 ${
+                isIncome
+                  ? 'bg-emerald-500 hover:bg-emerald-400'
+                  : 'bg-red-400 hover:bg-red-300'
+              }`}
             >
-              إلغاء
+              {f.id ? 'حفظ' : '+ أضف'}
             </button>
-          )}
+            {f.id && (
+              <button
+                onClick={() =>
+                  setTxForms((p) => ({ ...p, [type]: emptyTxForm() }))
+                }
+                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400"
+              >
+                إلغاء
+              </button>
+            )}
+          </div>
         </div>
 
         {/* قائمة الدورة */}
@@ -651,8 +711,21 @@ export default function MoneyPage() {
   ];
 
   return (
-    <div className="space-y-5">
+    <>
+    <div className="space-y-5 print:hidden">
       <h1 className="text-xl font-bold">الفلوس</h1>
+
+      {actionError && (
+        <div className="flex items-center justify-between rounded-xl border border-red-700/60 bg-red-950/40 px-4 py-2.5 text-sm text-red-200">
+          <span>⚠️ {actionError}</span>
+          <button
+            onClick={() => setActionError(null)}
+            className="text-red-300 hover:text-red-100"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-1.5 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900 p-1.5 md:gap-2">
         {(
@@ -748,81 +821,92 @@ export default function MoneyPage() {
             </div>
           ) : (
             <>
-              {/* رأس الدورة */}
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-                <div>
-                  <p className="text-sm font-bold text-zinc-200">
-                    الدورة الحالية — بدأت بـ{' '}
-                    <span className="num text-amber-300">
-                      {fmtNum(Number(openCycle.opening_amount))}{' '}
-                      {openCycle.opening_currency}
-                    </span>{' '}
-                    يوم{' '}
-                    <span className="num">
-                      {openCycle.started_at.slice(0, 10)}
-                    </span>
-                  </p>
-                  {openCycle.note && (
-                    <p className="mt-1 text-xs text-zinc-500">
-                      📝 {openCycle.note}
-                    </p>
-                  )}
-                </div>
-                <button
-                  onClick={closeCycle}
-                  className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-bold text-zinc-300 hover:border-red-600 hover:text-red-400"
-                >
-                  🔒 اقفل الدورة
-                </button>
-              </div>
-
-              {/* الدخل والمصاريف جنب بعض */}
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 md:p-5">
-                <h2 className="mb-3 text-sm font-bold text-zinc-200">
-                  دخلك ومصاريفك في الدورة دي
-                </h2>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {txColumn('income')}
-                  {txColumn('expense')}
-                </div>
-              </div>
-
-              {/* المتبقي — رقم واحد موحّد + أفعال */}
+              {/* رأس الدورة + المتبقي بارز فوق — تشوفه من غير سكرول */}
               <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/30 p-4 md:p-5">
-                <p className="text-xs text-amber-300/80">المتبقي معاك</p>
-                <p
-                  className={`num mt-1 text-4xl font-black ${
-                    remainingEGP >= 0 ? 'text-amber-300' : 'text-red-400'
-                  }`}
-                >
-                  {fmtNum(remainingEGP)} EGP
-                </p>
-                <p className="num mt-0.5 text-xs text-zinc-500">
-                  ≈ {fmtNum(remainingAED)} AED — سعر اليوم:{' '}
-                  {fmtNum(liveFxRate, 2)} EGP لكل 1 AED
-                </p>
-                {(debtPaidEGP > 0 || debtPaidAED > 0) && (
-                  <p className="num mt-1 text-xs text-zinc-600">
-                    (اتخصم منه سداد ديون في الدورة دي: {fmtNum(debtPaidEGP)}{' '}
-                    EGP + {fmtNum(debtPaidAED)} AED)
-                  </p>
-                )}
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs text-zinc-400">
+                      الدورة الحالية — بدأت بـ{' '}
+                      <span className="num font-bold text-amber-300">
+                        {fmtNum(Number(openCycle.opening_amount))}{' '}
+                        {openCycle.opening_currency}
+                      </span>{' '}
+                      يوم{' '}
+                      <span className="num">
+                        {openCycle.started_at.slice(0, 10)}
+                      </span>
+                    </p>
+                    {openCycle.note && (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        📝 {openCycle.note}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => printCycleSummary(openCycle)}
+                      className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-bold text-zinc-300 hover:border-amber-500 hover:text-amber-300"
+                    >
+                      🖨 ملخص PDF
+                    </button>
+                    <button
+                      onClick={closeCycle}
+                      className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-bold text-zinc-300 hover:border-red-600 hover:text-red-400"
+                    >
+                      🔒 اقفل الدورة
+                    </button>
+                  </div>
+                </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setShowPayInCycle(!showPayInCycle)}
-                    disabled={onMeOpenDebts.length === 0}
-                    className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-bold text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                <div className="mt-4 border-t border-zinc-800 pt-4">
+                  <p className="text-xs text-amber-300/80">المتبقي معاك</p>
+                  <p
+                    className={`num mt-1 text-4xl font-black ${
+                      remainingEGP >= 0 ? 'text-amber-300' : 'text-red-400'
+                    }`}
                   >
-                    🤝 سدّد دين من الباقي
-                  </button>
-                  <button
-                    onClick={investRemaining}
-                    disabled={remainingEGP <= 0}
-                    className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 hover:bg-amber-400 disabled:opacity-40"
-                  >
-                    📈 استثمر الباقي
-                  </button>
+                    {fmtNum(remainingEGP)} EGP
+                  </p>
+                  <p className="num mt-0.5 text-xs text-zinc-500">
+                    ≈ {fmtNum(remainingAED)} AED — سعر اليوم:{' '}
+                    {fmtNum(liveFxRate, 2)} EGP لكل 1 AED
+                  </p>
+                  <p className="num mt-2 text-xs leading-6 text-zinc-500">
+                    بدأت بـ{' '}
+                    {fmtNum(
+                      toEGP(
+                        Number(openCycle.opening_amount),
+                        openCycle.opening_currency
+                      )
+                    )}{' '}
+                    + دخلت {fmtNum(incomeEGP + incomeAED * liveFxRate)} −
+                    صرفت {fmtNum(expenseEGP + expenseAED * liveFxRate)}
+                    {(debtPaidEGP > 0 || debtPaidAED > 0) && (
+                      <>
+                        {' '}
+                        − سددت{' '}
+                        {fmtNum(debtPaidEGP + debtPaidAED * liveFxRate)}
+                      </>
+                    )}{' '}
+                    (بالجنيه)
+                  </p>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setShowPayInCycle(!showPayInCycle)}
+                      disabled={onMeOpenDebts.length === 0}
+                      className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-bold text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+                    >
+                      🤝 سدّد دين من الباقي
+                    </button>
+                    <button
+                      onClick={investRemaining}
+                      disabled={remainingEGP <= 0}
+                      className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 hover:bg-amber-400 disabled:opacity-40"
+                    >
+                      📈 استثمر الباقي
+                    </button>
+                  </div>
                 </div>
 
                 {showPayInCycle && (
@@ -891,6 +975,17 @@ export default function MoneyPage() {
                     )}
                   </div>
                 )}
+              </div>
+
+              {/* تسجيل الدخل والمصاريف — تحت، بعد ما شفت المتبقي */}
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 md:p-5">
+                <h2 className="mb-3 text-sm font-bold text-zinc-200">
+                  سجّل دخلك ومصاريفك في الدورة دي
+                </h2>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {txColumn('income')}
+                  {txColumn('expense')}
+                </div>
               </div>
             </>
           )}
@@ -1497,39 +1592,77 @@ export default function MoneyPage() {
 
           {/* دورات سابقة */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
-            <h2 className="mb-3 text-sm font-bold text-zinc-300">
-              🗂 دورات سابقة (مقفولة)
-            </h2>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold text-zinc-300">
+                🗂 دورات سابقة (مقفولة)
+              </h2>
+              <div className="flex gap-1.5">
+                {(
+                  [
+                    ['ALL', 'الكل'],
+                    ['POS', '🟢 بربح'],
+                    ['NEG', '🔴 بخسارة'],
+                  ] as [typeof cycleFilter, string][]
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setCycleFilter(key)}
+                    className={`rounded-full px-3 py-1 text-[11px] font-bold transition-colors ${
+                      cycleFilter === key
+                        ? 'bg-amber-500 text-zinc-950'
+                        : 'border border-zinc-700 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {closedCycles.length === 0 ? (
               <p className="text-sm text-zinc-600">لسه مفيش دورة اتقفلت</p>
             ) : (
               <ul className="space-y-2">
-                {closedCycles.map((c) => {
-                  const rem = cycleRemainingEGP(c);
-                  return (
-                    <li
-                      key={c.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-zinc-950/60 px-3 py-2 text-sm"
-                    >
-                      <span className="text-zinc-300">
-                        بدأت بـ{' '}
-                        <span className="num">
-                          {fmtNum(Number(c.opening_amount))}{' '}
-                          {c.opening_currency}
-                        </span>{' '}
-                        <span className="num text-xs text-zinc-500">
-                          ({c.started_at.slice(0, 10)} →{' '}
-                          {c.closed_at?.slice(0, 10)})
-                        </span>
-                      </span>
-                      <span
-                        className={`num font-bold ${rem >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                {closedCycles
+                  .filter((c) => {
+                    if (cycleFilter === 'ALL') return true;
+                    const rem = cycleRemainingEGP(c);
+                    return cycleFilter === 'POS' ? rem >= 0 : rem < 0;
+                  })
+                  .map((c) => {
+                    const rem = cycleRemainingEGP(c);
+                    return (
+                      <li
+                        key={c.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-zinc-950/60 px-3 py-2 text-sm"
                       >
-                        اتقفلت على {fmtNum(rem)} EGP
-                      </span>
-                    </li>
-                  );
-                })}
+                        <span className="text-zinc-300">
+                          بدأت بـ{' '}
+                          <span className="num">
+                            {fmtNum(Number(c.opening_amount))}{' '}
+                            {c.opening_currency}
+                          </span>{' '}
+                          <span className="num text-xs text-zinc-500">
+                            ({c.started_at.slice(0, 10)} →{' '}
+                            {c.closed_at?.slice(0, 10)})
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`num font-bold ${rem >= 0 ? 'text-emerald-300' : 'text-red-300'}`}
+                          >
+                            اتقفلت على {fmtNum(rem)} EGP
+                          </span>
+                          <button
+                            onClick={() => printCycleSummary(c)}
+                            title="نزّل ملخص PDF"
+                            className="text-zinc-500 hover:text-amber-300"
+                          >
+                            🖨
+                          </button>
+                        </span>
+                      </li>
+                    );
+                  })}
               </ul>
             )}
           </div>
@@ -1606,5 +1739,100 @@ export default function MoneyPage() {
         </div>
       )}
     </div>
+
+    {/* ============ ملخص الطباعة/PDF — مخفي على الشاشة، بيظهر بس وقت الطباعة ============ */}
+    {printCycle && (
+      <div className="hidden bg-white p-8 text-black print:block">
+        {(() => {
+          const tx = transactions
+            .filter((t) => t.cycle_id === printCycle.id)
+            .sort((a, b) => a.date.localeCompare(b.date));
+          const pays = payments
+            .filter((p) => p.cycle_id === printCycle.id)
+            .sort((a, b) => a.date.localeCompare(b.date));
+          const rem = cycleRemainingEGP(printCycle);
+          return (
+            <>
+              <h1 className="mb-1 text-xl font-bold">ملخص دورة كاش — Invest-OS</h1>
+              <p className="num mb-4 text-sm text-zinc-700">
+                من {printCycle.started_at.slice(0, 10)}
+                {printCycle.closed_at
+                  ? ` إلى ${printCycle.closed_at.slice(0, 10)}`
+                  : ' (لسه مفتوحة)'}
+                {' — '}
+                بدأت بـ {fmtNum(Number(printCycle.opening_amount))}{' '}
+                {printCycle.opening_currency}
+              </p>
+
+              <h2 className="mb-2 mt-4 text-sm font-bold">حركات الدخل والمصاريف</h2>
+              {tx.length === 0 ? (
+                <p className="text-xs text-zinc-600">لا توجد حركات</p>
+              ) : (
+                <table className="num w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-black text-right">
+                      <th className="py-1">التاريخ</th>
+                      <th className="py-1">النوع</th>
+                      <th className="py-1">البند</th>
+                      <th className="py-1">المبلغ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tx.map((t) => (
+                      <tr key={t.id} className="border-b border-zinc-300">
+                        <td className="py-1">{t.date}</td>
+                        <td className="py-1">
+                          {t.type === 'income' ? 'دخل' : 'مصروف'}
+                        </td>
+                        <td className="py-1">{t.category || '—'}</td>
+                        <td className="py-1">
+                          {fmtMoney(Number(t.amount), t.currency)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <h2 className="mb-2 mt-4 text-sm font-bold">سدادات ديون في الدورة</h2>
+              {pays.length === 0 ? (
+                <p className="text-xs text-zinc-600">لا توجد سدادات</p>
+              ) : (
+                <table className="num w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-black text-right">
+                      <th className="py-1">التاريخ</th>
+                      <th className="py-1">لمين</th>
+                      <th className="py-1">المبلغ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pays.map((p) => {
+                      const d = debtById.get(p.debt_id);
+                      return (
+                        <tr key={p.id} className="border-b border-zinc-300">
+                          <td className="py-1">{p.date}</td>
+                          <td className="py-1">
+                            {d ? personById.get(d.person_id)?.name : '—'}
+                          </td>
+                          <td className="py-1">
+                            {fmtMoney(Number(p.amount), d?.currency || 'EGP')}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              <p className="num mt-6 text-lg font-bold">
+                المتبقي: {fmtNum(rem)} EGP
+              </p>
+            </>
+          );
+        })()}
+      </div>
+    )}
+  </>
   );
 }
