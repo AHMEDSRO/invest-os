@@ -121,6 +121,13 @@ export type DebtPayment = {
   created_at: string;
 };
 
+export type Wallet = {
+  id: number;
+  balance: number;
+  currency: Currency;
+  updated_at: string;
+};
+
 export type Transaction = {
   id: string;
   date: string;

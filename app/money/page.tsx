@@ -10,6 +10,7 @@ import type {
   Transaction,
 } from '@/lib/types';
 import { useFinanceData } from '@/lib/useFinanceData';
+import { useLiveFx } from '@/lib/useLiveFx';
 
 type Tab = 'MONTH' | 'DEBTS' | 'OVERVIEW' | 'HISTORY';
 type DebtFilter = 'ALL' | 'ON_ME' | 'TO_ME' | 'SETTLED';
@@ -42,11 +43,15 @@ export default function MoneyPage() {
     debts,
     payments,
     transactions,
+    wallet,
     fxRate,
     loading,
     error,
     reload,
   } = useFinanceData();
+
+  // سعر AED/EGP حي — بيتحدث لوحده باستمرار، وبيرجع لآخر سعر مخزّن لو الإنترنت فصل
+  const liveFxRate = useLiveFx(fxRate);
 
   const [tab, setTab] = useState<Tab>('MONTH');
   const [filter, setFilter] = useState<DebtFilter>('ALL');
@@ -63,6 +68,13 @@ export default function MoneyPage() {
   // سداد من خطة الشهر: اختيار دين + مبلغ
   const [payTarget, setPayTarget] = useState<string>('');
   const [payTargetAmount, setPayTargetAmount] = useState<string>('');
+
+  // ضبط رصيد المحفظة
+  const [showWalletForm, setShowWalletForm] = useState(false);
+  const [walletForm, setWalletForm] = useState({
+    amount: '',
+    currency: 'AED' as Currency,
+  });
 
   // إضافة/تعديل دين
   const [showAddDebt, setShowAddDebt] = useState(false);
@@ -136,9 +148,9 @@ export default function MoneyPage() {
   const toMeEGP = sumRemaining('to_me', 'EGP');
   const toMeAED = sumRemaining('to_me', 'AED');
   const netAED =
-    toAED(toMeEGP, 'EGP', fxRate) +
+    toAED(toMeEGP, 'EGP', liveFxRate) +
     toMeAED -
-    (toAED(onMeEGP, 'EGP', fxRate) + onMeAED);
+    (toAED(onMeEGP, 'EGP', liveFxRate) + onMeAED);
 
   // ===== حسابات الشهر الحالي =====
   const monthKey = todayISO().slice(0, 7);
@@ -169,9 +181,53 @@ export default function MoneyPage() {
 
   const leftoverEGP = incomeEGP - expenseEGP - debtPaidEGP;
   const leftoverAED = incomeAED - expenseAED - debtPaidAED;
-  const leftoverUnified = toAED(leftoverEGP, 'EGP', fxRate) + leftoverAED;
+  const leftoverUnified = toAED(leftoverEGP, 'EGP', liveFxRate) + leftoverAED;
+
+  // ===== رصيد المحفظة الموحّد بالجنيه (بيتحدث لحظيًا بسعر اليوم) =====
+  // = الرصيد الأساسي اللي حطيته + كل الدخل − كل المصاريف − سداد الديون اللي عليك
+  const toEGP = (amount: number, currency: string) =>
+    currency === 'AED' ? amount * liveFxRate : amount;
+
+  const allIncomeEGP = transactions
+    .filter((t) => t.type === 'income')
+    .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
+  const allExpenseEGP = transactions
+    .filter((t) => t.type === 'expense')
+    .reduce((s, t) => s + toEGP(Number(t.amount), t.currency), 0);
+  const allDebtPaidOnMeEGP = payments
+    .filter((p) => debtById.get(p.debt_id)?.direction === 'on_me')
+    .reduce((s, p) => {
+      const d = debtById.get(p.debt_id);
+      return s + toEGP(Number(p.amount), d?.currency || 'EGP');
+    }, 0);
+
+  const walletBaselineEGP = wallet
+    ? toEGP(Number(wallet.balance), wallet.currency)
+    : 0;
+  const currentBalanceEGP =
+    walletBaselineEGP + allIncomeEGP - allExpenseEGP - allDebtPaidOnMeEGP;
+  const currentBalanceAED = currentBalanceEGP / liveFxRate;
 
   // ===== أفعال =====
+
+  async function saveWallet(e: React.FormEvent) {
+    e.preventDefault();
+    const amount = parseFloat(walletForm.amount);
+    if (!amount || amount <= 0) return;
+    setSaving(true);
+    await getSupabase()
+      .from('wallet')
+      .update({
+        balance: amount,
+        currency: walletForm.currency,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', 1);
+    setSaving(false);
+    setShowWalletForm(false);
+    setWalletForm({ amount: '', currency: 'AED' });
+    reload();
+  }
 
   async function saveTx(type: TxType) {
     const f = txForms[type];
@@ -564,6 +620,82 @@ export default function MoneyPage() {
   return (
     <div className="space-y-5">
       <h1 className="text-xl font-bold">الفلوس</h1>
+
+      {/* رصيدك الحالي — موحّد بالجنيه، بيتحدث لحظيًا بسعر اليوم */}
+      <div className="rounded-2xl border border-amber-600/40 bg-gradient-to-l from-zinc-900 via-zinc-900 to-amber-950/30 p-4 md:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs text-amber-300/80">
+              رصيدك الحالي (محوّل للجنيه تلقائيًا)
+            </p>
+            <p
+              className={`num mt-1 text-3xl font-black ${
+                currentBalanceEGP >= 0 ? 'text-amber-300' : 'text-red-400'
+              }`}
+            >
+              {fmtNum(currentBalanceEGP)} EGP
+            </p>
+            <p className="num mt-0.5 text-xs text-zinc-500">
+              ≈ {fmtNum(currentBalanceAED)} AED — سعر اليوم:{' '}
+              {fmtNum(liveFxRate, 2)} EGP لكل 1 AED (بيتحدث لوحده)
+            </p>
+          </div>
+          <button
+            onClick={() => setShowWalletForm(!showWalletForm)}
+            className="rounded-lg border border-amber-600/50 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-amber-500 hover:text-zinc-950"
+          >
+            {showWalletForm ? 'إغلاق' : '✏️ اضبط رصيدك'}
+          </button>
+        </div>
+
+        {showWalletForm && (
+          <form
+            onSubmit={saveWallet}
+            className="mt-4 flex flex-wrap items-end gap-2 border-t border-zinc-800 pt-4"
+          >
+            <div>
+              <label className="mb-1 block text-xs text-zinc-400">
+                معايا كام دلوقتي (يستبدل الرصيد الحالي)
+              </label>
+              <input
+                type="number"
+                step="any"
+                dir="ltr"
+                value={walletForm.amount}
+                onChange={(e) =>
+                  setWalletForm({ ...walletForm, amount: e.target.value })
+                }
+                placeholder="مثلًا 9000"
+                className={`${inputCls} w-32`}
+              />
+            </div>
+            <select
+              value={walletForm.currency}
+              onChange={(e) =>
+                setWalletForm({
+                  ...walletForm,
+                  currency: e.target.value as Currency,
+                })
+              }
+              className={inputCls}
+            >
+              <option value="AED">درهم AED</option>
+              <option value="EGP">جنيه EGP</option>
+            </select>
+            <button
+              type="submit"
+              disabled={saving || !parseFloat(walletForm.amount)}
+              className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-50"
+            >
+              احفظ رصيدي
+            </button>
+            <p className="basis-full text-xs leading-5 text-zinc-500">
+              بعد الحفظ، رصيدك هيزيد مع أي دخل تسجله وينقص مع أي مصروف أو سداد
+              دين تسجله — تلقائيًا.
+            </p>
+          </form>
+        )}
+      </div>
 
       <div className="flex gap-1.5 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900 p-1.5 md:gap-2">
         {(

@@ -18,8 +18,12 @@ export default function RootLayout({
       <body
         className={`${cairo.className} min-h-screen bg-zinc-950 bg-[radial-gradient(ellipse_at_top,rgba(212,160,23,0.06),transparent_60%)] text-zinc-100 antialiased`}
       >
-        <Nav />
-        <main className="mx-auto max-w-6xl px-4 py-6 md:px-6">{children}</main>
+        <div className="md:flex">
+          <Nav />
+          <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 md:px-6">
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   );
