@@ -118,29 +118,34 @@ export type DebtPayment = {
   amount: number;
   method: string | null;
   note: string | null;
-  cycle_id: string | null;
   created_at: string;
 };
 
-// دورة كاش: تبدأها بمبلغ وتقفلها بمزاجك (مش شرط تتصفر ولا مرتبطة بالشهر)
-export type MoneyCycle = {
-  id: string;
-  started_at: string;
-  closed_at: string | null;
-  status: 'open' | 'closed';
-  opening_amount: number;
-  opening_currency: Currency;
-  note: string | null;
-};
+export type TxType = 'income' | 'expense' | 'transfer_out' | 'transfer_in';
 
+// حركة مالية — العملة بتحدد جيبتها (EGP = مصر، AED = الإمارات).
+// حركات التحويل (transfer_out/transfer_in) بيتربطوا ببعض بـ transfer_group.
 export type Transaction = {
   id: string;
   date: string;
-  type: 'income' | 'expense';
+  type: TxType;
   category: string | null;
   description: string | null;
   amount: number;
   currency: Currency;
-  cycle_id: string | null;
+  transfer_group: string | null;
+  created_at: string;
+};
+
+// التزام شهري ثابت (إيجار، قسط...) — قايمة مرجعية بتوضح "مطلوب مني كام"
+// last_paid_month بيتصفر تلقائي كل شهر جديد
+export type MonthlyObligation = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: Currency;
+  due_day: number | null;
+  is_active: boolean;
+  last_paid_month: string | null;
   created_at: string;
 };

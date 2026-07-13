@@ -6,18 +6,18 @@ import type {
   DebtPayment,
   DebtRow,
   FxRow,
-  MoneyCycle,
+  MonthlyObligation,
   Person,
   Transaction,
 } from './types';
 
-// تحميل بيانات «الفلوس»: أشخاص + ديون + سدادات + حركات + دورات كاش + سعر الصرف
+// تحميل بيانات «الفلوس»: أشخاص + ديون + سدادات + حركات + التزامات ثابتة + سعر الصرف
 export function useFinanceData() {
   const [people, setPeople] = useState<Person[]>([]);
   const [debts, setDebts] = useState<DebtRow[]>([]);
   const [payments, setPayments] = useState<DebtPayment[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [cycles, setCycles] = useState<MoneyCycle[]>([]);
+  const [obligations, setObligations] = useState<MonthlyObligation[]>([]);
   const [fxRate, setFxRate] = useState(13);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +26,7 @@ export function useFinanceData() {
     setLoading(true);
     setError(null);
     const supabase = getSupabase();
-    const [p, d, pay, t, c, fx] = await Promise.all([
+    const [p, d, pay, t, ob, fx] = await Promise.all([
       supabase.from('people').select('*').order('name'),
       supabase.from('debts').select('*').order('created_at'),
       supabase
@@ -38,25 +38,25 @@ export function useFinanceData() {
         .select('*')
         .order('date', { ascending: false }),
       supabase
-        .from('money_cycles')
+        .from('monthly_obligations')
         .select('*')
-        .order('started_at', { ascending: false }),
+        .order('created_at', { ascending: true }),
       supabase
         .from('fx_history')
         .select('*')
         .order('date', { ascending: false })
         .limit(1),
     ]);
-    if (p.error || d.error || pay.error || t.error || c.error) {
+    if (p.error || d.error || pay.error || t.error || ob.error) {
       setError(
-        'حصل خطأ في تحميل البيانات — اتأكد إنك نفذت migration 005 في Supabase'
+        'حصل خطأ في تحميل البيانات — اتأكد إنك نفذت migration 006 في Supabase'
       );
     }
     setPeople((p.data as Person[]) ?? []);
     setDebts((d.data as DebtRow[]) ?? []);
     setPayments((pay.data as DebtPayment[]) ?? []);
     setTransactions((t.data as Transaction[]) ?? []);
-    setCycles((c.data as MoneyCycle[]) ?? []);
+    setObligations((ob.data as MonthlyObligation[]) ?? []);
     const fxRow = (fx.data as FxRow[])?.[0];
     if (fxRow) setFxRate(Number(fxRow.aed_egp));
     setLoading(false);
@@ -71,7 +71,7 @@ export function useFinanceData() {
     debts,
     payments,
     transactions,
-    cycles,
+    obligations,
     fxRate,
     loading,
     error,
